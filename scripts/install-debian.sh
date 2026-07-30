@@ -52,7 +52,7 @@ fi
 apt-get update
 apt-get install -y ca-certificates curl build-essential sqlite3 nodejs npm golang rsync openssl
 
-mkdir -p "${INSTALL_DIR}" "${CONFIG_DIR}" "${DATA_DIR}"
+mkdir -p "${INSTALL_DIR}" "${CONFIG_DIR}" "${DATA_DIR}" "/etc/mysql"
 rsync -a --delete "${BACKEND_DIR}/" "${INSTALL_DIR}/backend/"
 rsync -a --delete "${FRONTEND_DIR}/" "${INSTALL_DIR}/frontend/"
 
