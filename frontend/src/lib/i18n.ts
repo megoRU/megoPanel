@@ -1,0 +1,5 @@
+import i18n from 'i18next';
+import { initReactI18next } from 'react-i18next';
+const resources = { en: { translation: { login:'Login', username:'Username', password:'Password', confirm:'Confirm password', dashboard:'Dashboard', onboarding:'Onboarding', createAdmin:'Create administrator', next:'Next', install:'Install', installed:'Installed', notInstalled:'Not Installed', remote:'Enable remote access', logout:'Logout', cpu:'CPU usage', ram:'RAM usage', disk:'Disk usage', uptime:'Uptime', os:'OS version', hostname:'Hostname' } }, ru: { translation: { login:'Войти', username:'Имя пользователя', password:'Пароль', confirm:'Подтвердите пароль', dashboard:'Панель', onboarding:'Настройка', createAdmin:'Создать администратора', next:'Далее', install:'Установить', installed:'Установлено', notInstalled:'Не установлено', remote:'Включить удалённый доступ', logout:'Выйти', cpu:'ЦП', ram:'Память', disk:'Диск', uptime:'Аптайм', os:'Версия ОС', hostname:'Хост' } } };
+void i18n.use(initReactI18next).init({ resources: resources, lng: 'en', fallbackLng: 'en', interpolation: { escapeValue: false } });
+export default i18n;
