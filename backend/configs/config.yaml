@@ -1,0 +1,12 @@
+environment: development
+server:
+  address: ":8080"
+  frontend_url: "http://localhost:5173"
+database:
+  path: "panel.db"
+security:
+  jwt_secret: "change-me-in-production"
+  access_ttl_minutes: 15
+  refresh_ttl_hours: 168
+  cookie_secure: false
+  csrf_secret: "change-me-csrf"

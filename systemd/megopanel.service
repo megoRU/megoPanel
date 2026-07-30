@@ -1,0 +1,21 @@
+[Unit]
+Description=MegoPanel server management panel
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/megopanel/backend
+Environment=MEGOPANEL_CONFIG=/etc/megopanel/config.yaml
+ExecStart=/usr/local/bin/megopanel
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=false
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/opt/megopanel /etc/megopanel /etc/mysql /var/lib/megopanel
+
+[Install]
+WantedBy=multi-user.target
