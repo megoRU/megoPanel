@@ -1,7 +1,7 @@
 environment: development
 server:
-  address: ":8080"
-  frontend_url: "http://localhost:5173"
+  address: ":8888"
+  frontend_url: "http://localhost:8889"
 database:
   path: "panel.db"
 security:

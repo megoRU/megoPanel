@@ -8,7 +8,7 @@ MegoPanel is a native Debian/Ubuntu server management panel inspired by modern p
 - React + TypeScript + Vite frontend with TailwindCSS styling, route protection, TanStack Query, Axios, React Router, and i18next English/Russian translations.
 - First-launch onboarding wizard for creating the only administrator account and installing MariaDB and Nginx.
 - Native Debian/Ubuntu installation through `scripts/install-debian.sh` and a systemd unit.
-- GitHub Actions CI for backend tests/build and frontend build.
+- GitHub Actions CI for backend build and frontend build.
 
 ## Requirements
 
@@ -28,7 +28,7 @@ The installer also installs these packages automatically.
 Clone the repository on the target server and run the installer:
 
 ```bash
-git clone <repository-url> megopanel
+git clone https://github.com/megoRU/megoPanel megopanel
 cd megopanel
 sudo scripts/install-debian.sh
 ```
@@ -46,7 +46,7 @@ The installer performs these actions:
 Open the panel after installation:
 
 ```text
-http://SERVER_IP:8080
+http://SERVER_IP:8888
 ```
 
 ## Manual development run
@@ -55,7 +55,7 @@ http://SERVER_IP:8080
 
 ```bash
 cd backend
-go mod download
+go mod tidy
 go run ./cmd/server
 ```
 
@@ -73,13 +73,12 @@ npm install
 npm run dev
 ```
 
-The Vite dev server proxies `/api` to `http://localhost:8080`.
+The Vite dev server runs on port `8889` and proxies `/api` to `http://localhost:8888`.
 
 ## Build commands
 
 ```bash
 cd backend
-go test ./...
 go build -trimpath -ldflags='-s -w' -o megopanel ./cmd/server
 ```
 
@@ -98,7 +97,7 @@ Important production settings to change before exposing the panel:
 ```yaml
 environment: production
 security:
-  jwt_secret: "replace-with-a-long-random-secret"
+  jwt_secret: "generated-randomly-during-installation"
   csrf_secret: "replace-with-a-long-random-secret"
   cookie_secure: true
 ```
@@ -133,7 +132,7 @@ All API routes are versioned under `/api/v1`:
 
 CI is defined in `.github/workflows/ci.yml`. It runs on pushes and pull requests and performs:
 
-- Go dependency download, formatting check, tests, and backend build.
+- Go dependency resolution, formatting check, and backend build.
 - Node dependency installation and frontend production build.
 
 ## Notes
