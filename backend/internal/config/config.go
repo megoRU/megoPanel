@@ -37,7 +37,7 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 	if cfg.Server.Address == "" {
-		cfg.Server.Address = ":8080"
+		cfg.Server.Address = ":8888"
 	}
 	if cfg.Database.Path == "" {
 		cfg.Database.Path = "panel.db"
