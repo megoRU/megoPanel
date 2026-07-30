@@ -55,7 +55,7 @@ http://SERVER_IP:8888
 
 ```bash
 cd backend
-go mod download
+go mod tidy
 go run ./cmd/server
 ```
 
@@ -132,7 +132,7 @@ All API routes are versioned under `/api/v1`:
 
 CI is defined in `.github/workflows/ci.yml`. It runs on pushes and pull requests and performs:
 
-- Go dependency download, formatting check, and backend build.
+- Go dependency resolution, formatting check, and backend build.
 - Node dependency installation and frontend production build.
 
 ## Notes

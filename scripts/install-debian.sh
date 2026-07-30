@@ -63,7 +63,7 @@ mkdir -p "${INSTALL_DIR}/backend/templates/frontend"
 rsync -a --delete "${INSTALL_DIR}/frontend/dist/" "${INSTALL_DIR}/backend/templates/frontend/"
 
 cd "${INSTALL_DIR}/backend"
-go mod download
+go mod tidy
 go build -trimpath -ldflags='-s -w' -o /usr/local/bin/megopanel ./cmd/server
 
 if [[ ! -f "${CONFIG_DIR}/config.yaml" ]]; then
