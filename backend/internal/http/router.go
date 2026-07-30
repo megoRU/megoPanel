@@ -96,6 +96,11 @@ func NewRouter(d RouterDeps) *gin.Engine {
 		defer conn.Close()
 		_ = conn.WriteJSON(gin.H{"type": "hello"})
 	})
+	r.Static("/assets", "templates/frontend/assets")
+	r.StaticFile("/favicon.ico", "templates/frontend/favicon.ico")
+	r.NoRoute(func(c *gin.Context) {
+		c.File("templates/frontend/index.html")
+	})
 	return r
 }
 func securityHeaders() gin.HandlerFunc {

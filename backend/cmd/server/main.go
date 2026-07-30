@@ -10,7 +10,11 @@ import (
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	cfg, err := config.Load("configs/config.yaml")
+	configPath := os.Getenv("MEGOPANEL_CONFIG")
+	if configPath == "" {
+		configPath = "configs/config.yaml"
+	}
+	cfg, err := config.Load(configPath)
 	if err != nil {
 		logger.Error("configuration error", "error", err)
 		os.Exit(1)
