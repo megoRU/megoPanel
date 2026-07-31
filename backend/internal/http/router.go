@@ -8,6 +8,7 @@ import (
 	"mego-panel/backend/internal/config"
 	"mego-panel/backend/internal/domain"
 	"mego-panel/backend/internal/service"
+	"net"
 	"net/http"
 )
 
@@ -24,7 +25,7 @@ func NewRouter(d RouterDeps) *gin.Engine {
 		gin.SetMode(gin.ReleaseMode)
 	}
 	r := gin.New()
-	r.Use(gin.Logger(), gin.Recovery(), securityHeaders(), cors.New(cors.Config{AllowOrigins: []string{d.Config.Server.FrontendURL}, AllowCredentials: true, AllowHeaders: []string{"Content-Type", "X-CSRF-Token"}, AllowMethods: []string{"GET", "POST", "OPTIONS"}}))
+	r.Use(gin.Logger(), gin.Recovery(), securityHeaders(), cors.New(cors.Config{AllowOrigins: []string{d.Config.Server.FrontendURL}, AllowCredentials: true, AllowHeaders: []string{"Content-Type", "X-CSRF-Token"}, AllowMethods: []string{"GET", "POST", "DELETE", "OPTIONS"}}))
 	api := r.Group("/api/v1")
 	api.GET("/setup/status", func(c *gin.Context) { ok, err := d.Auth.IsConfigured(); respond(c, ok, gin.H{"configured": ok}, err) })
 	api.POST("/setup/admin", func(c *gin.Context) {
@@ -90,14 +91,19 @@ func NewRouter(d RouterDeps) *gin.Engine {
 	})
 	protected.POST("/websites", func(c *gin.Context) {
 		var req struct {
-			Domain string `json:"domain"`
-			Path   string `json:"path"`
+			Domain    string `json:"domain"`
+			IPAddress string `json:"ipAddress"`
+			Path      string `json:"path"`
 		}
 		if err := c.ShouldBindJSON(&req); err != nil {
 			c.JSON(400, gin.H{"error": err.Error()})
 			return
 		}
-		site := domain.Website{Domain: req.Domain, Path: req.Path}
+		if net.ParseIP(req.IPAddress) == nil {
+			c.JSON(400, gin.H{"error": "valid IP address is required"})
+			return
+		}
+		site := domain.Website{Domain: req.Domain, IPAddress: req.IPAddress, Path: req.Path}
 		if err := d.DB.Create(&site).Error; err != nil {
 			c.JSON(400, gin.H{"error": err.Error()})
 			return

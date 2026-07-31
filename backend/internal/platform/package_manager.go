@@ -2,6 +2,7 @@ package platform
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"strings"
@@ -22,10 +23,27 @@ func DetectPackageManager() (PackageManager, error) {
 	}
 	return nil, errors.New("unsupported Linux distribution; Debian and Ubuntu are supported")
 }
-func (m *AptManager) Install(p string) error {
-	return exec.Command("apt-get", "install", "-y", p).Run()
+func (m *AptManager) Install(packageName string) error {
+	if err := runCommand("dpkg", "--configure", "-a"); err != nil {
+		return err
+	}
+	if err := runCommand("apt-get", "update"); err != nil {
+		return err
+	}
+	return runCommand("apt-get", "install", "-y", packageName)
 }
-func (m *AptManager) Restart(s string) error { return exec.Command("systemctl", "restart", s).Run() }
-func (m *AptManager) Enable(s string) error {
-	return exec.Command("systemctl", "enable", "--now", s).Run()
+func (m *AptManager) Restart(serviceName string) error {
+	return runCommand("systemctl", "restart", serviceName)
+}
+func (m *AptManager) Enable(serviceName string) error {
+	return runCommand("systemctl", "enable", "--now", serviceName)
+}
+func runCommand(name string, arguments ...string) error {
+	command := exec.Command(name, arguments...)
+	command.Env = append(os.Environ(), "DEBIAN_FRONTEND=noninteractive")
+	output, err := command.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%s %s failed: %w: %s", name, strings.Join(arguments, " "), err, strings.TrimSpace(string(output)))
+	}
+	return nil
 }

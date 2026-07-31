@@ -21,6 +21,7 @@ type ServiceState struct {
 type Website struct {
 	ID        uint      `gorm:"primaryKey" json:"id"`
 	Domain    string    `gorm:"uniqueIndex;size:120;not null" json:"domain"`
+	IPAddress string    `gorm:"size:45;not null" json:"ipAddress"`
 	Path      string    `gorm:"not null" json:"path"`
 	CreatedAt time.Time `json:"createdAt"`
 }

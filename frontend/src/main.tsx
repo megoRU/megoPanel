@@ -24,6 +24,7 @@ type CardData = {
 type Website = {
   id: number;
   domain: string;
+  ipAddress: string;
   path: string;
   createdAt: string;
 };
@@ -122,7 +123,7 @@ function Onboarding(): React.JSX.Element {
       return api.post('/install/mariadb', { remoteAccess: remoteAccessEnabled });
     },
     onSuccess: function handleMariaDbInstalled(): void {
-      setStep(3);
+      setStep(2);
     },
   });
 
@@ -131,7 +132,7 @@ function Onboarding(): React.JSX.Element {
       return api.post('/install/nginx');
     },
     onSuccess: function handleNginxInstalled(): void {
-      window.location.href = '/';
+      setStep(2);
     },
   });
 
@@ -170,28 +171,30 @@ function Onboarding(): React.JSX.Element {
         ) : null}
 
         {step === 2 ? (
-          <div className="space-y-4">
-            <h3 className="text-xl font-bold text-purple-300">MariaDB</h3>
-            <p className="text-sm text-slate-300">Status: <span className="font-semibold text-purple-400">{installMariaDbMutation.isSuccess ? t('installed') : t('notInstalled')}</span></p>
-            <label className="flex items-center gap-3 text-sm text-slate-300 cursor-pointer select-none">
-              <input className="accent-purple-600 rounded" checked={remoteAccessEnabled} onChange={changeRemoteAccess} type="checkbox" />
-              {t('remote')}
-            </label>
-            <button className="btn" onClick={installMariaDb} type="button" disabled={installMariaDbMutation.isPending}>
-              {installMariaDbMutation.isPending ? 'Installing...' : t('install')}
+          <div className="grid gap-6 md:grid-cols-2">
+            <div className="space-y-4 rounded-2xl border border-white/5 bg-black/10 p-5">
+              <h3 className="text-xl font-bold text-purple-300">MariaDB</h3>
+              <p className="text-sm text-slate-300">Status: <span className="font-semibold text-purple-400">{installMariaDbMutation.isSuccess ? t('installed') : t('notInstalled')}</span></p>
+              <label className="flex items-center gap-3 text-sm text-slate-300 cursor-pointer select-none">
+                <input className="accent-purple-600 rounded" checked={remoteAccessEnabled} onChange={changeRemoteAccess} type="checkbox" />
+                {t('remote')}
+              </label>
+              <button className="btn" onClick={installMariaDb} type="button" disabled={installMariaDbMutation.isPending}>
+                {installMariaDbMutation.isPending ? 'Installing...' : t('install')}
+              </button>
+              {installMariaDbMutation.error ? <p className="text-xs font-semibold text-rose-400">Installation failed</p> : null}
+            </div>
+            <div className="space-y-4 rounded-2xl border border-white/5 bg-black/10 p-5">
+              <h3 className="text-xl font-bold text-purple-300">Nginx</h3>
+              <p className="text-sm text-slate-300">Status: <span className="font-semibold text-purple-400">{installNginxMutation.isSuccess ? t('installed') : t('notInstalled')}</span></p>
+              <button className="btn" onClick={installNginx} type="button" disabled={installNginxMutation.isPending}>
+                {installNginxMutation.isPending ? 'Installing...' : t('install')}
+              </button>
+              {installNginxMutation.error ? <p className="text-xs font-semibold text-rose-400">Installation failed</p> : null}
+            </div>
+            <button className="btn md:col-span-2" onClick={function finishOnboarding(): void { window.location.href = '/'; }} type="button">
+              {t('next')}
             </button>
-            {installMariaDbMutation.error ? <p className="text-xs font-semibold text-rose-400">Installation failed</p> : null}
-          </div>
-        ) : null}
-
-        {step === 3 ? (
-          <div className="space-y-4">
-            <h3 className="text-xl font-bold text-purple-300">Nginx</h3>
-            <p className="text-sm text-slate-300">Status: <span className="font-semibold text-purple-400">{installNginxMutation.isSuccess ? t('installed') : t('notInstalled')}</span></p>
-            <button className="btn" onClick={installNginx} type="button" disabled={installNginxMutation.isPending}>
-              {installNginxMutation.isPending ? 'Installing...' : t('install')}
-            </button>
-            {installNginxMutation.error ? <p className="text-xs font-semibold text-rose-400">Installation failed</p> : null}
           </div>
         ) : null}
       </section>
@@ -219,7 +222,7 @@ function Dashboard(): React.JSX.Element {
   });
 
   const createWebsiteMutation = useMutation({
-    mutationFn: function createWebsite(data: { domain: string; path: string }) {
+    mutationFn: function createWebsite(data: { domain: string; ipAddress: string; path: string }) {
       return api.post('/websites', data);
     },
     onSuccess: function handleCreateSuccess() {
@@ -237,16 +240,20 @@ function Dashboard(): React.JSX.Element {
   });
 
   const [domainInput, setDomainInput] = React.useState('');
+  const [ipAddressInput, setIpAddressInput] = React.useState('');
   const [pathInput, setPathInput] = React.useState('');
 
   function handleCreateWebsite(event: React.FormEvent) {
     event.preventDefault();
-    if (!domainInput || !pathInput) return;
-    createWebsiteMutation.mutate({ domain: domainInput, path: pathInput }, {
-      onSuccess: () => {
+    if (!domainInput || !ipAddressInput || !pathInput) {
+      return;
+    }
+    createWebsiteMutation.mutate({ domain: domainInput, ipAddress: ipAddressInput, path: pathInput }, {
+      onSuccess: function resetWebsiteForm(): void {
         setDomainInput('');
+        setIpAddressInput('');
         setPathInput('');
-      }
+      },
     });
   }
 
@@ -284,8 +291,18 @@ function Dashboard(): React.JSX.Element {
               <input
                 className="input"
                 value={domainInput}
-                onChange={(e) => setDomainInput(e.target.value)}
+                onChange={function handleDomainInputChange(event: React.ChangeEvent<HTMLInputElement>): void { setDomainInput(event.target.value); }}
                 placeholder="example.com"
+                required
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-slate-400 mb-1 uppercase tracking-wider">{t('ipAddress')}</label>
+              <input
+                className="input"
+                value={ipAddressInput}
+                onChange={function handleIpAddressInputChange(event: React.ChangeEvent<HTMLInputElement>): void { setIpAddressInput(event.target.value); }}
+                placeholder="192.0.2.10"
                 required
               />
             </div>
@@ -294,7 +311,7 @@ function Dashboard(): React.JSX.Element {
               <input
                 className="input"
                 value={pathInput}
-                onChange={(e) => setPathInput(e.target.value)}
+                onChange={function handlePathInputChange(event: React.ChangeEvent<HTMLInputElement>): void { setPathInput(event.target.value); }}
                 placeholder="/var/www/example"
                 required
               />
@@ -318,26 +335,30 @@ function Dashboard(): React.JSX.Element {
                 <thead>
                   <tr className="border-b border-white/5 text-slate-400 text-xs font-semibold uppercase tracking-wider">
                     <th className="py-3 px-4">{t('domain')}</th>
+                    <th className="py-3 px-4">{t('ipAddress')}</th>
                     <th className="py-3 px-4">{t('path')}</th>
                     <th className="py-3 px-4 text-right"></th>
                   </tr>
                 </thead>
                 <tbody>
-                  {websitesQuery.data.map((site) => (
+                  {websitesQuery.data.map(function renderWebsite(site: Website): React.JSX.Element {
+                    return (
                     <tr className="border-b border-white/5 hover:bg-white/5 transition duration-150" key={site.id}>
                       <td className="py-3 px-4 font-semibold text-slate-200">{site.domain}</td>
+                      <td className="py-3 px-4 text-slate-400 font-mono text-xs">{site.ipAddress}</td>
                       <td className="py-3 px-4 text-slate-400 font-mono text-xs">{site.path}</td>
                       <td className="py-3 px-4 text-right">
                         <button
                           className="btn-danger"
-                          onClick={() => deleteWebsiteMutation.mutate(site.id)}
+                          onClick={function deleteSelectedWebsite(): void { deleteWebsiteMutation.mutate(site.id); }}
                           disabled={deleteWebsiteMutation.isPending}
                         >
                           {t('delete')}
                         </button>
                       </td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
