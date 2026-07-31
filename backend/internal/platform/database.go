@@ -11,5 +11,5 @@ func OpenDatabase(path string) (*gorm.DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	return db, db.AutoMigrate(&domain.Admin{}, &domain.Setting{}, &domain.ServiceState{})
+	return db, db.AutoMigrate(&domain.Admin{}, &domain.Setting{}, &domain.ServiceState{}, &domain.Website{})
 }

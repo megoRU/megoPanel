@@ -32,7 +32,7 @@ func New(cfg *config.Config, logger *slog.Logger) (*App, error) {
 	auth := service.NewAuthService(admins, settings, cfg)
 	dashboard := service.NewDashboardService()
 	install := service.NewInstallService(services, pm)
-	router := api.NewRouter(api.RouterDeps{Config: cfg, Auth: auth, Dashboard: dashboard, Install: install})
+	router := api.NewRouter(api.RouterDeps{Config: cfg, Auth: auth, Dashboard: dashboard, Install: install, DB: db})
 	return &App{cfg: cfg, logger: logger, router: router}, nil
 }
 func (a *App) Run() error {
