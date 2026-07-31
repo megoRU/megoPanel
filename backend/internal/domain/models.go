@@ -29,6 +29,10 @@ type DashboardStats struct {
 	CPUUsage  float64 `json:"cpuUsage"`
 	RAMUsage  float64 `json:"ramUsage"`
 	DiskUsage float64 `json:"diskUsage"`
+	RAMUsed   float64 `json:"ramUsed"`
+	RAMTotal  float64 `json:"ramTotal"`
+	DiskUsed  float64 `json:"diskUsed"`
+	DiskTotal float64 `json:"diskTotal"`
 	Uptime    string  `json:"uptime"`
 	OSVersion string  `json:"osVersion"`
 	Hostname  string  `json:"hostname"`

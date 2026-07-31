@@ -30,7 +30,25 @@ const resources = {
       delete: 'Delete',
       siteAdded: 'Website added successfully',
       create: 'Create',
-      addSite: 'Add Website'
+      addSite: 'Add Website',
+      databases: 'Databases',
+      settings: 'Settings',
+      serverManagement: 'Server Management',
+      language: 'Language',
+      dbName: 'Database Name',
+      createDb: 'Create Database',
+      addDb: 'Add Database',
+      installPhpMyAdmin: 'Install phpMyAdmin',
+      openPhpMyAdmin: 'Open phpMyAdmin',
+      phpMyAdminStatus: 'phpMyAdmin',
+      phpMyAdminInstalled: 'phpMyAdmin is installed and running on port 8080',
+      phpMyAdminNotInstalled: 'phpMyAdmin is not installed',
+      mariadbNotInstalled: 'MariaDB is not installed. Please install it to manage databases.',
+      installMariaDb: 'Install MariaDB',
+      siteExistsError: 'A website with this domain has already been added.',
+      dbExistsError: 'A database with this name already exists.',
+      dbCreated: 'Database created successfully',
+      pmaInstalling: 'Installing phpMyAdmin...'
     }
   },
   ru: {
@@ -58,11 +76,29 @@ const resources = {
       domain: 'Домен',
       ipAddress: 'IP-адрес',
       path: 'Путь',
-      createSite: 'Создать сайт',
+      createSite: 'Добавить сайт',
       delete: 'Удалить',
       siteAdded: 'Сайт успешно добавлен',
       create: 'Создать',
-      addSite: 'Добавить сайт'
+      addSite: 'Добавить сайт',
+      databases: 'Базы данных',
+      settings: 'Настройки',
+      serverManagement: 'Управление сервером',
+      language: 'Язык',
+      dbName: 'Имя базы данных',
+      createDb: 'Создать базу данных',
+      addDb: 'Добавить базу данных',
+      installPhpMyAdmin: 'Установить phpMyAdmin',
+      openPhpMyAdmin: 'Открыть phpMyAdmin',
+      phpMyAdminStatus: 'phpMyAdmin',
+      phpMyAdminInstalled: 'phpMyAdmin установлен и работает на порту 8080',
+      phpMyAdminNotInstalled: 'phpMyAdmin не установлен',
+      mariadbNotInstalled: 'MariaDB не установлена. Пожалуйста, установите её для управления базами данных.',
+      installMariaDb: 'Установить MariaDB',
+      siteExistsError: 'Сайт с таким доменом уже добавлен.',
+      dbExistsError: 'База данных с таким именем уже существует.',
+      dbCreated: 'База данных успешно создана',
+      pmaInstalling: 'Установка phpMyAdmin...'
     }
   }
 };
