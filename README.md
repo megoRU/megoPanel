@@ -112,6 +112,30 @@ sudo systemctl restart megopanel
 sudo journalctl -u megopanel -f
 ```
 
+## Complete removal
+
+To completely remove MegoPanel from a server, run:
+
+```bash
+sudo systemctl stop megopanel 2>/dev/null || true
+sudo systemctl disable megopanel 2>/dev/null || true
+
+sudo rm -f /etc/systemd/system/megopanel.service
+sudo systemctl daemon-reload
+sudo systemctl reset-failed
+
+sudo rm -f /usr/local/bin/megopanel
+
+sudo rm -rf /etc/megopanel
+sudo rm -rf /var/lib/megopanel
+sudo rm -rf /opt/megopanel
+sudo rm -rf /root/megopanel
+sudo rm -rf ~/megopanel
+
+sudo userdel -r megopanel 2>/dev/null || true
+sudo groupdel megopanel 2>/dev/null || true
+```
+
 ## API overview
 
 All API routes are versioned under `/api/v1`:
