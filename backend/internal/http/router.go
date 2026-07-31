@@ -10,6 +10,9 @@ import (
 	"mego-panel/backend/internal/service"
 	"net"
 	"net/http"
+	"os/exec"
+	"regexp"
+	"strings"
 )
 
 type RouterDeps struct {
@@ -93,7 +96,6 @@ func NewRouter(d RouterDeps) *gin.Engine {
 		var req struct {
 			Domain    string `json:"domain"`
 			IPAddress string `json:"ipAddress"`
-			Path      string `json:"path"`
 		}
 		if err := c.ShouldBindJSON(&req); err != nil {
 			c.JSON(400, gin.H{"error": err.Error()})
@@ -103,7 +105,20 @@ func NewRouter(d RouterDeps) *gin.Engine {
 			c.JSON(400, gin.H{"error": "valid IP address is required"})
 			return
 		}
-		site := domain.Website{Domain: req.Domain, IPAddress: req.IPAddress, Path: req.Path}
+
+		// Check for duplicate domain
+		var count int64
+		if err := d.DB.Model(&domain.Website{}).Where("domain = ?", req.Domain).Count(&count).Error; err != nil {
+			c.JSON(400, gin.H{"error": err.Error()})
+			return
+		}
+		if count > 0 {
+			c.JSON(400, gin.H{"error": "Website with this domain is already added"})
+			return
+		}
+
+		path := "/var/www/" + req.Domain
+		site := domain.Website{Domain: req.Domain, IPAddress: req.IPAddress, Path: path}
 		if err := d.DB.Create(&site).Error; err != nil {
 			c.JSON(400, gin.H{"error": err.Error()})
 			return
@@ -118,6 +133,85 @@ func NewRouter(d RouterDeps) *gin.Engine {
 		}
 		c.JSON(200, gin.H{"ok": true})
 	})
+	protected.GET("/databases", func(c *gin.Context) {
+		cmd := exec.Command("mysql", "-u", "root", "-N", "-e", "SHOW DATABASES;")
+		output, err := cmd.Output()
+		if err != nil {
+			cmd = exec.Command("mariadb", "-u", "root", "-N", "-e", "SHOW DATABASES;")
+			output, err = cmd.Output()
+		}
+		if err != nil {
+			c.JSON(400, gin.H{"error": "failed to list databases: " + err.Error()})
+			return
+		}
+
+		lines := strings.Split(string(output), "\n")
+		var dbs []string
+		for _, line := range lines {
+			db := strings.TrimSpace(line)
+			if db == "" {
+				continue
+			}
+			if db == "information_schema" || db == "mysql" || db == "performance_schema" || db == "sys" || db == "test" || db == "tmp" {
+				continue
+			}
+			dbs = append(dbs, db)
+		}
+		c.JSON(200, dbs)
+	})
+
+	protected.POST("/databases", func(c *gin.Context) {
+		var req struct {
+			Name string `json:"name"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(400, gin.H{"error": err.Error()})
+			return
+		}
+
+		if req.Name == "" {
+			c.JSON(400, gin.H{"error": "Database name cannot be empty"})
+			return
+		}
+		matched, _ := regexp.MatchString("^[a-zA-Z0-9_]+$", req.Name)
+		if !matched {
+			c.JSON(400, gin.H{"error": "Database name can only contain letters, numbers, and underscores"})
+			return
+		}
+
+		createCmd := "CREATE DATABASE `" + req.Name + "`;"
+		cmd := exec.Command("mysql", "-u", "root", "-e", createCmd)
+		if err := cmd.Run(); err != nil {
+			cmd = exec.Command("mariadb", "-u", "root", "-e", createCmd)
+			if err := cmd.Run(); err != nil {
+				c.JSON(400, gin.H{"error": "failed to create database: " + err.Error()})
+				return
+			}
+		}
+		c.JSON(200, gin.H{"ok": true, "name": req.Name})
+	})
+
+	protected.DELETE("/databases/:name", func(c *gin.Context) {
+		name := c.Param("name")
+
+		matched, _ := regexp.MatchString("^[a-zA-Z0-9_]+$", name)
+		if !matched {
+			c.JSON(400, gin.H{"error": "invalid database name"})
+			return
+		}
+
+		dropCmd := "DROP DATABASE `" + name + "`;"
+		cmd := exec.Command("mysql", "-u", "root", "-e", dropCmd)
+		if err := cmd.Run(); err != nil {
+			cmd = exec.Command("mariadb", "-u", "root", "-e", dropCmd)
+			if err := cmd.Run(); err != nil {
+				c.JSON(400, gin.H{"error": "failed to delete database: " + err.Error()})
+				return
+			}
+		}
+		c.JSON(200, gin.H{"ok": true})
+	})
+
 	protected.GET("/install/:name/status", func(c *gin.Context) { state, err := d.Install.Status(c.Param("name")); respond(c, false, state, err) })
 	protected.POST("/install/mariadb", func(c *gin.Context) {
 		var req struct {
@@ -128,6 +222,10 @@ func NewRouter(d RouterDeps) *gin.Engine {
 		respond(c, false, state, err)
 	})
 	protected.POST("/install/nginx", func(c *gin.Context) { state, err := d.Install.InstallNginx(); respond(c, false, state, err) })
+	protected.POST("/install/phpmyadmin", func(c *gin.Context) {
+		state, err := d.Install.InstallPhpMyAdmin()
+		respond(c, false, state, err)
+	})
 	protected.GET("/ws", func(c *gin.Context) {
 		upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
 		conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)

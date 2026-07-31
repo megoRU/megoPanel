@@ -11,6 +11,10 @@ type DashboardStats = {
   cpuUsage: number;
   ramUsage: number;
   diskUsage: number;
+  ramUsed: number;
+  ramTotal: number;
+  diskUsed: number;
+  diskTotal: number;
   uptime: string;
   osVersion: string;
   hostname: string;
@@ -48,15 +52,15 @@ function LanguageSwitch(): React.JSX.Element {
 }
 
 function Layout(properties: { children: React.ReactNode }): React.JSX.Element {
+  const { t } = useTranslation();
   return (
     <main className="min-h-screen p-4 md:p-8">
       <div className="mx-auto max-w-6xl">
         <header className="mb-8 flex items-center justify-between border-b border-white/5 pb-6">
           <div>
             <p className="text-xs font-bold uppercase tracking-widest text-purple-500">MegoPanel</p>
-            <h1 className="text-3xl font-extrabold bg-clip-text text-transparent bg-gradient-to-r from-white via-slate-200 to-zinc-400">Server Management</h1>
+            <h1 className="text-3xl font-extrabold bg-clip-text text-transparent bg-gradient-to-r from-white via-slate-200 to-zinc-400">{t('serverManagement')}</h1>
           </div>
-          <LanguageSwitch />
         </header>
         {properties.children}
       </div>
@@ -204,6 +208,7 @@ function Onboarding(): React.JSX.Element {
 
 function Dashboard(): React.JSX.Element {
   const { t } = useTranslation();
+  const [activeTab, setActiveTab] = React.useState<'websites' | 'databases' | 'settings'>('websites');
 
   const statsQuery = useQuery({
     queryKey: ['dashboard'],
@@ -211,6 +216,7 @@ function Dashboard(): React.JSX.Element {
       const response = await api.get<DashboardStats>('/dashboard');
       return response.data;
     },
+    refetchInterval: 1000,
   });
 
   const websitesQuery = useQuery({
@@ -222,7 +228,7 @@ function Dashboard(): React.JSX.Element {
   });
 
   const createWebsiteMutation = useMutation({
-    mutationFn: function createWebsite(data: { domain: string; ipAddress: string; path: string }) {
+    mutationFn: function createWebsite(data: { domain: string; ipAddress: string }) {
       return api.post('/websites', data);
     },
     onSuccess: function handleCreateSuccess() {
@@ -241,29 +247,114 @@ function Dashboard(): React.JSX.Element {
 
   const [domainInput, setDomainInput] = React.useState('');
   const [ipAddressInput, setIpAddressInput] = React.useState('');
-  const [pathInput, setPathInput] = React.useState('');
 
   function handleCreateWebsite(event: React.FormEvent) {
     event.preventDefault();
-    if (!domainInput || !ipAddressInput || !pathInput) {
+    if (!domainInput || !ipAddressInput) {
       return;
     }
-    createWebsiteMutation.mutate({ domain: domainInput, ipAddress: ipAddressInput, path: pathInput }, {
+    createWebsiteMutation.mutate({ domain: domainInput, ipAddress: ipAddressInput }, {
       onSuccess: function resetWebsiteForm(): void {
         setDomainInput('');
         setIpAddressInput('');
-        setPathInput('');
       },
     });
   }
 
+  // Database Management Queries and Mutations
+  const mariadbStatusQuery = useQuery({
+    queryKey: ['mariadb-status'],
+    queryFn: async function loadMariaDbStatus() {
+      const response = await api.get<{ name: string; installed: boolean }>('/install/mariadb/status');
+      return response.data;
+    },
+  });
+
+  const phpmyadminStatusQuery = useQuery({
+    queryKey: ['phpmyadmin-status'],
+    queryFn: async function loadPhpmyadminStatus() {
+      const response = await api.get<{ name: string; installed: boolean }>('/install/phpmyadmin/status');
+      return response.data;
+    },
+  });
+
+  const databasesQuery = useQuery({
+    queryKey: ['databases'],
+    queryFn: async function loadDatabases(): Promise<string[]> {
+      const response = await api.get<string[]>('/databases');
+      return response.data;
+    },
+    enabled: mariadbStatusQuery.data?.installed === true,
+  });
+
+  const createDatabaseMutation = useMutation({
+    mutationFn: function createDatabase(name: string) {
+      return api.post('/databases', { name });
+    },
+    onSuccess: function handleCreateSuccess() {
+      void databasesQuery.refetch();
+    },
+  });
+
+  const deleteDatabaseMutation = useMutation({
+    mutationFn: function deleteDatabase(name: string) {
+      return api.delete(`/databases/${name}`);
+    },
+    onSuccess: function handleDeleteSuccess() {
+      void databasesQuery.refetch();
+    },
+  });
+
+  const installPhpmyadminMutation = useMutation({
+    mutationFn: function installPhpmyadmin() {
+      return api.post('/install/phpmyadmin');
+    },
+    onSuccess: function handleInstallSuccess() {
+      void phpmyadminStatusQuery.refetch();
+    },
+  });
+
+  const installMariaDbMutation = useMutation({
+    mutationFn: function installMariaDb() {
+      return api.post('/install/mariadb', { remoteAccess: false });
+    },
+    onSuccess: function handleInstallSuccess() {
+      void mariadbStatusQuery.refetch();
+    },
+  });
+
+  const [dbNameInput, setDbNameInput] = React.useState('');
+
+  function handleCreateDatabase(event: React.FormEvent) {
+    event.preventDefault();
+    if (!dbNameInput) {
+      return;
+    }
+    createDatabaseMutation.mutate(dbNameInput, {
+      onSuccess: function resetDbForm(): void {
+        setDbNameInput('');
+      },
+    });
+  }
+
+  const formatRAM = (stats: DashboardStats) => {
+    if (stats.ramUsed !== undefined && stats.ramTotal !== undefined && stats.ramTotal > 0) {
+      return stats.ramUsed.toFixed(2) + ' GB / ' + stats.ramTotal.toFixed(2) + ' GB';
+    }
+    return stats.ramUsage ? stats.ramUsage.toFixed(2) + '%' : '...';
+  };
+
+  const formatDisk = (stats: DashboardStats) => {
+    if (stats.diskUsed !== undefined && stats.diskTotal !== undefined && stats.diskTotal > 0) {
+      return stats.diskUsed.toFixed(2) + ' GB / ' + stats.diskTotal.toFixed(2) + ' GB';
+    }
+    return stats.diskUsage ? stats.diskUsage.toFixed(2) + '%' : '...';
+  };
+
   const cards: CardData[] = statsQuery.data ? [
-    { label: t('cpu'), value: statsQuery.data.cpuUsage + '%' },
-    { label: t('ram'), value: statsQuery.data.ramUsage + '%' },
-    { label: t('disk'), value: statsQuery.data.diskUsage + '%' },
-    { label: t('uptime'), value: statsQuery.data.uptime },
-    { label: t('os'), value: statsQuery.data.osVersion },
-    { label: t('hostname'), value: statsQuery.data.hostname },
+    { label: t('cpu'), value: statsQuery.data.cpuUsage.toFixed(2) + '%' },
+    { label: t('ram'), value: formatRAM(statsQuery.data) },
+    { label: t('disk'), value: formatDisk(statsQuery.data) },
   ] : [];
 
   return (
@@ -280,91 +371,259 @@ function Dashboard(): React.JSX.Element {
         })}
       </div>
 
-      {/* Main Content Area */}
-      <div className="grid gap-8 lg:grid-cols-3">
-        {/* Left Column: Website Creation */}
-        <section className="card p-6 lg:col-span-1 bg-gradient-to-br from-purple-900/5 via-zinc-900/40 to-indigo-900/5">
-          <h3 className="text-xl font-bold mb-4 text-purple-300">{t('createSite')}</h3>
-          <form onSubmit={handleCreateWebsite} className="space-y-4">
-            <div>
-              <label className="block text-xs font-semibold text-slate-400 mb-1 uppercase tracking-wider">{t('domain')}</label>
-              <input
-                className="input"
-                value={domainInput}
-                onChange={function handleDomainInputChange(event: React.ChangeEvent<HTMLInputElement>): void { setDomainInput(event.target.value); }}
-                placeholder="example.com"
-                required
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-semibold text-slate-400 mb-1 uppercase tracking-wider">{t('ipAddress')}</label>
-              <input
-                className="input"
-                value={ipAddressInput}
-                onChange={function handleIpAddressInputChange(event: React.ChangeEvent<HTMLInputElement>): void { setIpAddressInput(event.target.value); }}
-                placeholder="192.0.2.10"
-                required
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-semibold text-slate-400 mb-1 uppercase tracking-wider">{t('path')}</label>
-              <input
-                className="input"
-                value={pathInput}
-                onChange={function handlePathInputChange(event: React.ChangeEvent<HTMLInputElement>): void { setPathInput(event.target.value); }}
-                placeholder="/var/www/example"
-                required
-              />
-            </div>
-            <button className="btn w-full mt-2" type="submit" disabled={createWebsiteMutation.isPending}>
-              {createWebsiteMutation.isPending ? '...' : t('addSite')}
-            </button>
-          </form>
-        </section>
+      {/* Navigation Tabs */}
+      <div className="mb-8 border-b border-white/5 flex gap-6">
+        <button
+          className={`pb-4 px-2 font-bold text-sm transition-all border-b-2 uppercase tracking-wider ${
+            activeTab === 'websites' ? 'border-purple-500 text-purple-400' : 'border-transparent text-slate-400 hover:text-white'
+          }`}
+          onClick={function selectWebsitesTab() { setActiveTab('websites'); }}
+          type="button"
+        >
+          {t('websites')}
+        </button>
+        <button
+          className={`pb-4 px-2 font-bold text-sm transition-all border-b-2 uppercase tracking-wider ${
+            activeTab === 'databases' ? 'border-purple-500 text-purple-400' : 'border-transparent text-slate-400 hover:text-white'
+          }`}
+          onClick={function selectDatabasesTab() { setActiveTab('databases'); }}
+          type="button"
+        >
+          {t('databases')}
+        </button>
+        <button
+          className={`pb-4 px-2 font-bold text-sm transition-all border-b-2 uppercase tracking-wider ${
+            activeTab === 'settings' ? 'border-purple-500 text-purple-400' : 'border-transparent text-slate-400 hover:text-white'
+          }`}
+          onClick={function selectSettingsTab() { setActiveTab('settings'); }}
+          type="button"
+        >
+          {t('settings')}
+        </button>
+      </div>
 
-        {/* Right Column: Websites List */}
-        <section className="card p-6 lg:col-span-2 bg-gradient-to-br from-purple-900/5 via-zinc-900/40 to-indigo-900/5">
-          <h3 className="text-xl font-bold mb-4 text-purple-300">{t('websites')}</h3>
-          {websitesQuery.isLoading ? (
-            <p className="text-sm text-slate-400">Loading websites...</p>
-          ) : !websitesQuery.data || websitesQuery.data.length === 0 ? (
-            <p className="text-sm text-slate-500 italic py-4">No websites configured yet.</p>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-sm border-collapse">
-                <thead>
-                  <tr className="border-b border-white/5 text-slate-400 text-xs font-semibold uppercase tracking-wider">
-                    <th className="py-3 px-4">{t('domain')}</th>
-                    <th className="py-3 px-4">{t('ipAddress')}</th>
-                    <th className="py-3 px-4">{t('path')}</th>
-                    <th className="py-3 px-4 text-right"></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {websitesQuery.data.map(function renderWebsite(site: Website): React.JSX.Element {
-                    return (
-                    <tr className="border-b border-white/5 hover:bg-white/5 transition duration-150" key={site.id}>
-                      <td className="py-3 px-4 font-semibold text-slate-200">{site.domain}</td>
-                      <td className="py-3 px-4 text-slate-400 font-mono text-xs">{site.ipAddress}</td>
-                      <td className="py-3 px-4 text-slate-400 font-mono text-xs">{site.path}</td>
-                      <td className="py-3 px-4 text-right">
-                        <button
-                          className="btn-danger"
-                          onClick={function deleteSelectedWebsite(): void { deleteWebsiteMutation.mutate(site.id); }}
-                          disabled={deleteWebsiteMutation.isPending}
-                        >
-                          {t('delete')}
-                        </button>
-                      </td>
+      {/* Tab Contents */}
+      {activeTab === 'websites' ? (
+        <div className="grid gap-8 lg:grid-cols-3 animate-fadeIn">
+          {/* Create Website Form */}
+          <section className="card p-6 lg:col-span-1 bg-gradient-to-br from-purple-900/5 via-zinc-900/40 to-indigo-900/5 h-fit">
+            <h3 className="text-xl font-bold mb-4 text-purple-300">{t('createSite')}</h3>
+            <form onSubmit={handleCreateWebsite} className="space-y-4">
+              <div>
+                <label className="block text-xs font-semibold text-slate-400 mb-1 uppercase tracking-wider">{t('domain')}</label>
+                <input
+                  className="input"
+                  value={domainInput}
+                  onChange={function handleDomainInputChange(event: React.ChangeEvent<HTMLInputElement>): void { setDomainInput(event.target.value); }}
+                  placeholder="example.com"
+                  required
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-400 mb-1 uppercase tracking-wider">{t('ipAddress')}</label>
+                <input
+                  className="input"
+                  value={ipAddressInput}
+                  onChange={function handleIpAddressInputChange(event: React.ChangeEvent<HTMLInputElement>): void { setIpAddressInput(event.target.value); }}
+                  placeholder="192.0.2.10"
+                  required
+                />
+              </div>
+              {createWebsiteMutation.isError ? (
+                <p className="text-xs font-semibold text-rose-400 mt-2">
+                  {(createWebsiteMutation.error as any)?.response?.data?.error || t('siteExistsError')}
+                </p>
+              ) : null}
+              {createWebsiteMutation.isSuccess ? (
+                <p className="text-xs font-semibold text-emerald-400 mt-2">{t('siteAdded')}</p>
+              ) : null}
+              <button className="btn w-full mt-2" type="submit" disabled={createWebsiteMutation.isPending}>
+                {createWebsiteMutation.isPending ? '...' : t('addSite')}
+              </button>
+            </form>
+          </section>
+
+          {/* Websites List */}
+          <section className="card p-6 lg:col-span-2 bg-gradient-to-br from-purple-900/5 via-zinc-900/40 to-indigo-900/5">
+            <h3 className="text-xl font-bold mb-4 text-purple-300">{t('websites')}</h3>
+            {websitesQuery.isLoading ? (
+              <p className="text-sm text-slate-400">Loading websites...</p>
+            ) : !websitesQuery.data || websitesQuery.data.length === 0 ? (
+              <p className="text-sm text-slate-500 italic py-4">No websites configured yet.</p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-sm border-collapse">
+                  <thead>
+                    <tr className="border-b border-white/5 text-slate-400 text-xs font-semibold uppercase tracking-wider">
+                      <th className="py-3 px-4">{t('domain')}</th>
+                      <th className="py-3 px-4">{t('ipAddress')}</th>
+                      <th className="py-3 px-4">{t('path')}</th>
+                      <th className="py-3 px-4 text-right"></th>
                     </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {websitesQuery.data.map(function renderWebsite(site: Website): React.JSX.Element {
+                      return (
+                        <tr className="border-b border-white/5 hover:bg-white/5 transition duration-150" key={site.id}>
+                          <td className="py-3 px-4 font-semibold text-slate-200">{site.domain}</td>
+                          <td className="py-3 px-4 text-slate-400 font-mono text-xs">{site.ipAddress}</td>
+                          <td className="py-3 px-4 text-slate-400 font-mono text-xs">{site.path}</td>
+                          <td className="py-3 px-4 text-right">
+                            <button
+                              className="btn-danger"
+                              onClick={function deleteSelectedWebsite(): void { deleteWebsiteMutation.mutate(site.id); }}
+                              disabled={deleteWebsiteMutation.isPending}
+                            >
+                              {t('delete')}
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+        </div>
+      ) : null}
+
+      {activeTab === 'databases' ? (
+        <div className="space-y-8 animate-fadeIn">
+          {mariadbStatusQuery.isLoading ? (
+            <p className="text-sm text-slate-400">Loading database status...</p>
+          ) : !mariadbStatusQuery.data?.installed ? (
+            <div className="card p-8 bg-gradient-to-br from-purple-900/10 via-zinc-900/40 to-indigo-900/10 text-center max-w-xl mx-auto space-y-4">
+              <h3 className="text-xl font-bold text-purple-300">MariaDB</h3>
+              <p className="text-slate-300 text-sm">{t('mariadbNotInstalled')}</p>
+              <button
+                className="btn"
+                onClick={function installDbService() { installMariaDbMutation.mutate(); }}
+                disabled={installMariaDbMutation.isPending}
+              >
+                {installMariaDbMutation.isPending ? 'Installing...' : t('installMariaDb')}
+              </button>
+            </div>
+          ) : (
+            <div className="space-y-8">
+              <div className="grid gap-8 lg:grid-cols-3">
+                {/* Create Database Form */}
+                <section className="card p-6 lg:col-span-1 bg-gradient-to-br from-purple-900/5 via-zinc-900/40 to-indigo-900/5 h-fit">
+                  <h3 className="text-xl font-bold mb-4 text-purple-300">{t('createDb')}</h3>
+                  <form onSubmit={handleCreateDatabase} className="space-y-4">
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-400 mb-1 uppercase tracking-wider">{t('dbName')}</label>
+                      <input
+                        className="input"
+                        value={dbNameInput}
+                        onChange={function handleDbNameInputChange(event: React.ChangeEvent<HTMLInputElement>): void { setDbNameInput(event.target.value); }}
+                        placeholder="my_database"
+                        required
+                      />
+                    </div>
+                    {createDatabaseMutation.isError ? (
+                      <p className="text-xs font-semibold text-rose-400 mt-2">
+                        {(createDatabaseMutation.error as any)?.response?.data?.error || t('dbExistsError')}
+                      </p>
+                    ) : null}
+                    {createDatabaseMutation.isSuccess ? (
+                      <p className="text-xs font-semibold text-emerald-400 mt-2">{t('dbCreated')}</p>
+                    ) : null}
+                    <button className="btn w-full mt-2" type="submit" disabled={createDatabaseMutation.isPending}>
+                      {createDatabaseMutation.isPending ? '...' : t('addDb')}
+                    </button>
+                  </form>
+                </section>
+
+                {/* Databases List */}
+                <section className="card p-6 lg:col-span-2 bg-gradient-to-br from-purple-900/5 via-zinc-900/40 to-indigo-900/5">
+                  <h3 className="text-xl font-bold mb-4 text-purple-300">{t('databases')}</h3>
+                  {databasesQuery.isLoading ? (
+                    <p className="text-sm text-slate-400">Loading databases...</p>
+                  ) : !databasesQuery.data || databasesQuery.data.length === 0 ? (
+                    <p className="text-sm text-slate-500 italic py-4">No separate databases configured yet.</p>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-sm border-collapse">
+                        <thead>
+                          <tr className="border-b border-white/5 text-slate-400 text-xs font-semibold uppercase tracking-wider">
+                            <th className="py-3 px-4">{t('dbName')}</th>
+                            <th className="py-3 px-4 text-right"></th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {databasesQuery.data.map(function renderDatabase(db: string): React.JSX.Element {
+                            return (
+                              <tr className="border-b border-white/5 hover:bg-white/5 transition duration-150" key={db}>
+                                <td className="py-3 px-4 font-semibold text-slate-200">{db}</td>
+                                <td className="py-3 px-4 text-right">
+                                  <button
+                                    className="btn-danger"
+                                    onClick={function deleteSelectedDatabase(): void { deleteDatabaseMutation.mutate(db); }}
+                                    disabled={deleteDatabaseMutation.isPending}
+                                  >
+                                    {t('delete')}
+                                  </button>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </section>
+              </div>
+
+              {/* phpMyAdmin Panel */}
+              <section className="card p-6 bg-gradient-to-br from-purple-900/5 via-zinc-900/40 to-indigo-900/5">
+                <h3 className="text-xl font-bold mb-4 text-purple-300">{t('phpMyAdminStatus')}</h3>
+                {phpmyadminStatusQuery.isLoading ? (
+                  <p className="text-sm text-slate-400">Loading phpMyAdmin status...</p>
+                ) : phpmyadminStatusQuery.data?.installed ? (
+                  <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+                    <p className="text-slate-300 text-sm">{t('phpMyAdminInstalled')}</p>
+                    <button
+                      className="btn"
+                      onClick={function openPma() {
+                        window.open(window.location.protocol + '//' + window.location.hostname + ':8080', '_blank');
+                      }}
+                    >
+                      {t('openPhpMyAdmin')}
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+                    <p className="text-slate-300 text-sm">{t('phpMyAdminNotInstalled')}</p>
+                    <button
+                      className="btn"
+                      onClick={function installPma() { installPhpmyadminMutation.mutate(); }}
+                      disabled={installPhpmyadminMutation.isPending}
+                    >
+                      {installPhpmyadminMutation.isPending ? t('pmaInstalling') : t('installPhpMyAdmin')}
+                    </button>
+                  </div>
+                )}
+              </section>
             </div>
           )}
-        </section>
-      </div>
+        </div>
+      ) : null}
+
+      {activeTab === 'settings' ? (
+        <div className="grid gap-8 lg:grid-cols-3 animate-fadeIn">
+          <section className="card p-6 lg:col-span-1 bg-gradient-to-br from-purple-900/5 via-zinc-900/40 to-indigo-900/5">
+            <h3 className="text-xl font-bold mb-4 text-purple-300">{t('settings')}</h3>
+            <div className="flex items-center justify-between py-4 border-b border-white/5">
+              <div>
+                <p className="font-semibold text-slate-200">{t('language')}</p>
+                <p className="text-xs text-slate-400">Change application language</p>
+              </div>
+              <LanguageSwitch />
+            </div>
+          </section>
+        </div>
+      ) : null}
     </Layout>
   );
 }
