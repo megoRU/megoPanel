@@ -219,15 +219,16 @@ func sampleRAM() float64 {
 func sampleDisk() float64 { return 42 }
 
 type InstallService struct {
-	repo repository.ServiceRepository
-	pm   platform.PackageManager
+	repo     repository.ServiceRepository
+	pm       platform.PackageManager
+	settings repository.SettingRepository
 }
 
-func NewInstallService(repo repository.ServiceRepository, pm platform.PackageManager) *InstallService {
-	return &InstallService{repo: repo, pm: pm}
+func NewInstallService(repo repository.ServiceRepository, pm platform.PackageManager, settings repository.SettingRepository) *InstallService {
+	return &InstallService{repo: repo, pm: pm, settings: settings}
 }
 func (s *InstallService) Status(name string) (*domain.ServiceState, error) { return s.repo.Get(name) }
-func (s *InstallService) InstallMariaDB(remote bool) (*domain.ServiceState, error) {
+func (s *InstallService) InstallMariaDB(remote bool, rootPassword string) (*domain.ServiceState, error) {
 	if err := s.pm.Install("mariadb-server"); err != nil {
 		return nil, err
 	}
@@ -236,6 +237,18 @@ func (s *InstallService) InstallMariaDB(remote bool) (*domain.ServiceState, erro
 	}
 	_ = s.pm.Enable("mariadb")
 	_ = s.pm.Restart("mariadb")
+
+	if rootPassword != "" {
+		_ = s.settings.Set("mariadb_root_password", rootPassword)
+		time.Sleep(1 * time.Second)
+		sqlCmd := fmt.Sprintf("ALTER USER 'root'@'localhost' IDENTIFIED BY '%s'; FLUSH PRIVILEGES;", strings.ReplaceAll(rootPassword, "'", "\\'"))
+		cmd := exec.Command("mysql", "-u", "root", "-e", sqlCmd)
+		if err := cmd.Run(); err != nil {
+			cmd = exec.Command("mariadb", "-u", "root", "-e", sqlCmd)
+			_ = cmd.Run()
+		}
+	}
+
 	state := &domain.ServiceState{Name: "mariadb", Installed: true, UpdatedAt: time.Now()}
 	return state, s.repo.Save(state)
 }

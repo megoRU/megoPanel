@@ -1,68 +1,49 @@
 # MegoPanel
 
-MegoPanel is a native Debian/Ubuntu server management panel inspired by modern products such as Vercel, Cloudflare, and GitHub. The backend is written in Go and the frontend is a separate React + TypeScript application.
+Native Debian/Ubuntu server management panel written in Go with a React frontend.
 
-## What is included
+## Features
 
-- Go 1.24+ backend with Gin, GORM, SQLite, JWT authentication, HttpOnly cookies, CSRF checks, CORS, security headers, REST API versioning, WebSocket support, YAML configuration, and structured logging.
-- React + TypeScript + Vite frontend with TailwindCSS styling, route protection, TanStack Query, Axios, React Router, and i18next English/Russian translations.
-- First-launch onboarding wizard for creating the only administrator account and installing MariaDB and Nginx.
-- Native Debian/Ubuntu installation through `scripts/install-debian.sh` and a systemd unit.
-- GitHub Actions CI for backend build and frontend build.
+- ⚡ Native installation (no Docker)
+- 🐹 Go + Gin backend
+- ⚛️ React + TypeScript frontend
+- 🔐 JWT authentication + CSRF protection
+- 🌐 English & Russian
+- 🚀 One-command installation
+- 🖥️ systemd service
 
 ## Requirements
 
-Use a clean Debian or Ubuntu server with root access.
+- Debian 12+/Ubuntu 22.04+
+- Root access
 
-Minimum recommended system packages:
+## Install
 
 ```bash
 sudo apt-get update
 sudo apt-get install -y ca-certificates curl build-essential sqlite3 nodejs npm golang rsync
-```
 
-The installer also installs these packages automatically.
-
-## Native Debian/Ubuntu installation
-
-Clone the repository on the target server and run the installer:
-
-```bash
-git clone https://github.com/megoRU/megoPanel megopanel
-cd megopanel
+git clone https://github.com/megoRU/megoPanel
+cd megoPanel
 sudo scripts/install-debian.sh
 ```
 
-The installer performs these actions:
+Open:
 
-1. Validates that the OS is Debian, Ubuntu, or Debian-like.
-2. Installs native build/runtime dependencies with APT.
-3. Builds the frontend with Vite.
-4. Copies the built frontend into the backend static directory.
-5. Builds the Go backend binary as `/usr/local/bin/megopanel`.
-6. Creates `/etc/megopanel/config.yaml` if it does not exist.
-7. Enables and starts the `megopanel.service` systemd unit.
-
-Open the panel after installation:
-
-```text
+```
 http://SERVER_IP:8888
 ```
 
-## Manual development run
+---
+
+<details>
+<summary><b>Development</b></summary>
 
 ### Backend
 
 ```bash
 cd backend
-go mod tidy
 go run ./cmd/server
-```
-
-By default the backend reads `backend/configs/config.yaml`. For production/native systemd runs, set `MEGOPANEL_CONFIG`:
-
-```bash
-MEGOPANEL_CONFIG=/etc/megopanel/config.yaml /usr/local/bin/megopanel
 ```
 
 ### Frontend
@@ -73,14 +54,23 @@ npm install
 npm run dev
 ```
 
-The Vite dev server runs on port `8889` and proxies `/api` to `http://localhost:8888`.
+Vite runs on **8889** and proxies `/api` to **8888**.
 
-## Build commands
+</details>
+
+---
+
+<details>
+<summary><b>Build</b></summary>
+
+Backend
 
 ```bash
 cd backend
-go build -trimpath -ldflags='-s -w' -o megopanel ./cmd/server
+go build -trimpath -ldflags="-s -w" -o megopanel ./cmd/server
 ```
+
+Frontend
 
 ```bash
 cd frontend
@@ -88,23 +78,30 @@ npm install
 npm run build
 ```
 
-## Runtime configuration
+</details>
 
-Configuration is YAML-based. The default file is `backend/configs/config.yaml`; native installs use `/etc/megopanel/config.yaml`.
+---
 
-Important production settings to change before exposing the panel:
+<details>
+<summary><b>Configuration</b></summary>
+
+Production config:
 
 ```yaml
 environment: production
+
 security:
-  jwt_secret: "generated-randomly-during-installation"
-  csrf_secret: "replace-with-a-long-random-secret"
+  jwt_secret: "..."
+  csrf_secret: "..."
   cookie_secure: true
 ```
 
-Use `cookie_secure: true` when serving the panel through HTTPS.
+</details>
 
-## systemd operations
+---
+
+<details>
+<summary><b>systemd</b></summary>
 
 ```bash
 sudo systemctl status megopanel
@@ -112,9 +109,37 @@ sudo systemctl restart megopanel
 sudo journalctl -u megopanel -f
 ```
 
-## Complete removal
+</details>
 
-To completely remove MegoPanel from a server, run:
+---
+
+<details>
+<summary><b>API</b></summary>
+
+All endpoints are under:
+
+```
+/api/v1
+```
+
+Examples:
+
+- `/setup/status`
+- `/setup/admin`
+- `/auth/login`
+- `/auth/logout`
+- `/auth/me`
+- `/dashboard`
+- `/install/mariadb`
+- `/install/nginx`
+- `/ws`
+
+</details>
+
+---
+
+<details>
+<summary><b>Complete removal</b></summary>
 
 ```bash
 sudo systemctl stop megopanel 2>/dev/null || true
@@ -136,29 +161,12 @@ sudo userdel -r megopanel 2>/dev/null || true
 sudo groupdel megopanel 2>/dev/null || true
 ```
 
-## API overview
+</details>
 
-All API routes are versioned under `/api/v1`:
+---
 
-- `GET /api/v1/setup/status`
-- `POST /api/v1/setup/admin`
-- `POST /api/v1/auth/login`
-- `POST /api/v1/auth/refresh`
-- `POST /api/v1/auth/logout`
-- `GET /api/v1/auth/me`
-- `GET /api/v1/dashboard`
-- `GET /api/v1/install/:name/status`
-- `POST /api/v1/install/mariadb`
-- `POST /api/v1/install/nginx`
-- `GET /api/v1/ws`
+## License
 
-## GitHub Actions
+This project is licensed under the **GNU General Public License v3.0**.
 
-CI is defined in `.github/workflows/ci.yml`. It runs on pushes and pull requests and performs:
-
-- Go dependency resolution, formatting check, and backend build.
-- Node dependency installation and frontend production build.
-
-## Notes
-
-This repository intentionally does not use Docker for deployment. The panel is designed to manage the host system directly, so installation is native on Debian/Ubuntu through systemd and APT.
+See the [LICENSE](https://github.com/megoRU/megoPanel/blob/main/LICENSE) file for details.

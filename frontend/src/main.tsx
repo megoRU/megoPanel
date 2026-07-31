@@ -44,16 +44,21 @@ if (typeof window !== 'undefined') {
 function LanguageSwitch(): React.JSX.Element {
   const { i18n } = useTranslation();
 
-  function toggleLanguage(): void {
-    const nextLanguage = i18n.language.startsWith('en') ? 'ru' : 'en';
-    void i18n.changeLanguage(nextLanguage);
-    localStorage.setItem('megopanel-language', nextLanguage);
+  function handleLanguageChange(event: React.ChangeEvent<HTMLSelectElement>): void {
+    const selectedLanguage = event.target.value;
+    void i18n.changeLanguage(selectedLanguage);
+    localStorage.setItem('megopanel-language', selectedLanguage);
   }
 
   return (
-    <button className="btn" onClick={toggleLanguage} type="button">
-      {i18n.language.toUpperCase()}
-    </button>
+    <select
+      className="input max-w-[120px] bg-[var(--input-bg)] text-[var(--input-text)] border border-[var(--input-border)] rounded-xl py-2 px-3 cursor-pointer"
+      value={i18n.language.startsWith('ru') ? 'ru' : 'en'}
+      onChange={handleLanguageChange}
+    >
+      <option value="en">EN</option>
+      <option value="ru">RU</option>
+    </select>
   );
 }
 
@@ -139,6 +144,7 @@ function Onboarding(): React.JSX.Element {
   const { t } = useTranslation();
   const [step, setStep] = React.useState(1);
   const [remoteAccessEnabled, setRemoteAccessEnabled] = React.useState(false);
+  const [dbRootPassword, setDbRootPassword] = React.useState('');
 
   const adminMutation = useMutation({
     mutationFn: function createAdministrator(formData: FormData) {
@@ -153,7 +159,7 @@ function Onboarding(): React.JSX.Element {
 
   const installMariaDbMutation = useMutation({
     mutationFn: function installMariaDb() {
-      return api.post('/install/mariadb', { remoteAccess: remoteAccessEnabled });
+      return api.post('/install/mariadb', { remoteAccess: remoteAccessEnabled, rootPassword: dbRootPassword });
     },
     onSuccess: function handleMariaDbInstalled(): void {
       // Just keep step 2 and let user see success
@@ -192,7 +198,7 @@ function Onboarding(): React.JSX.Element {
 
         {step === 1 ? (
           <form action={submitAdministrator} className="space-y-4">
-            <h3 className="text-lg font-bold text-purple-300">{t('createAdmin')}</h3>
+            <h3 className="text-lg font-bold text-[var(--heading-color)]">{t('createAdmin')}</h3>
             <input className="input" name="username" placeholder={t('username')} required />
             <input className="input" name="password" placeholder={t('password')} type="password" required />
             <input className="input" name="confirm" placeholder={t('confirm')} type="password" required />
@@ -207,12 +213,24 @@ function Onboarding(): React.JSX.Element {
           <div className="grid gap-6 md:grid-cols-2">
             {/* MariaDB Card */}
             <div className="space-y-4 rounded-2xl border border-[var(--border-color)] bg-black/10 p-5">
-              <h3 className="text-xl font-bold text-purple-300">MariaDB</h3>
+              <h3 className="text-xl font-bold text-[var(--heading-color)]">MariaDB</h3>
               <p className="text-sm text-[var(--text-color)]">Status: <span className="font-semibold text-purple-400">{installMariaDbMutation.isSuccess ? t('installed') : t('notInstalled')}</span></p>
               <label className="flex items-center gap-3 text-sm text-[var(--text-color)] cursor-pointer select-none">
                 <input className="accent-purple-600 rounded" checked={remoteAccessEnabled} onChange={changeRemoteAccess} type="checkbox" />
                 {t('remote')}
               </label>
+              {!installMariaDbMutation.isSuccess && (
+                <div className="space-y-1">
+                  <label className="block text-xs font-semibold text-[var(--text-muted)] uppercase tracking-wider">{t('dbRootPasswordLabel')}</label>
+                  <input
+                    className="input"
+                    type="password"
+                    placeholder={t('dbRootPasswordPlaceholder')}
+                    value={dbRootPassword}
+                    onChange={function handleDbRootPasswordChange(e: React.ChangeEvent<HTMLInputElement>) { setDbRootPassword(e.target.value); }}
+                  />
+                </div>
+              )}
               {!installMariaDbMutation.isSuccess && (
                 <button
                   className="btn flex items-center justify-center gap-2 cursor-pointer w-full"
@@ -236,7 +254,7 @@ function Onboarding(): React.JSX.Element {
 
             {/* Nginx Card */}
             <div className="space-y-4 rounded-2xl border border-[var(--border-color)] bg-black/10 p-5">
-              <h3 className="text-xl font-bold text-purple-300">Nginx</h3>
+              <h3 className="text-xl font-bold text-[var(--heading-color)]">Nginx</h3>
               <p className="text-sm text-[var(--text-color)]">Status: <span className="font-semibold text-purple-400">{installNginxMutation.isSuccess ? t('installed') : t('notInstalled')}</span></p>
               {!installNginxMutation.isSuccess && (
                 <button
@@ -351,8 +369,8 @@ function Dashboard(): React.JSX.Element {
   });
 
   const createDatabaseMutation = useMutation({
-    mutationFn: function createDatabase(name: string) {
-      return api.post('/databases', { name });
+    mutationFn: function createDatabase(data: { name: string; charset: string; password?: string }) {
+      return api.post('/databases', data);
     },
     onSuccess: function handleCreateSuccess() {
       void databasesQuery.refetch();
@@ -377,9 +395,11 @@ function Dashboard(): React.JSX.Element {
     },
   });
 
+  const [dashboardDbRootPassword, setDashboardDbRootPassword] = React.useState('');
+
   const installMariaDbMutation = useMutation({
     mutationFn: function installMariaDb() {
-      return api.post('/install/mariadb', { remoteAccess: false });
+      return api.post('/install/mariadb', { remoteAccess: false, rootPassword: dashboardDbRootPassword });
     },
     onSuccess: function handleInstallSuccess() {
       void mariadbStatusQuery.refetch();
@@ -387,15 +407,19 @@ function Dashboard(): React.JSX.Element {
   });
 
   const [dbNameInput, setDbNameInput] = React.useState('');
+  const [dbCharsetInput, setDbCharsetInput] = React.useState('utf8');
+  const [dbPasswordInput, setDbPasswordInput] = React.useState('');
 
   function handleCreateDatabase(event: React.FormEvent) {
     event.preventDefault();
     if (!dbNameInput) {
       return;
     }
-    createDatabaseMutation.mutate(dbNameInput, {
+    createDatabaseMutation.mutate({ name: dbNameInput, charset: dbCharsetInput, password: dbPasswordInput }, {
       onSuccess: function resetDbForm(): void {
         setDbNameInput('');
+        setDbPasswordInput('');
+        setDbCharsetInput('utf8');
       },
     });
   }
@@ -470,7 +494,7 @@ function Dashboard(): React.JSX.Element {
         <div className="grid gap-8 lg:grid-cols-3 animate-fadeIn">
           {/* Create Website Form */}
           <section className="card p-6 lg:col-span-1 bg-gradient-to-br from-purple-900/5 via-zinc-900/40 to-indigo-900/5 h-fit">
-            <h3 className="text-xl font-bold mb-4 text-purple-300">{t('createSite')}</h3>
+            <h3 className="text-xl font-bold mb-4 text-[var(--heading-color)]">{t('createSite')}</h3>
             <form onSubmit={handleCreateWebsite} className="space-y-4">
               <div>
                 <label className="block text-xs font-semibold text-[var(--text-muted)] mb-1 uppercase tracking-wider">{t('domain')}</label>
@@ -508,7 +532,7 @@ function Dashboard(): React.JSX.Element {
 
           {/* Websites List */}
           <section className="card p-6 lg:col-span-2 bg-gradient-to-br from-purple-900/5 via-zinc-900/40 to-indigo-900/5">
-            <h3 className="text-xl font-bold mb-4 text-purple-300">{t('websites')}</h3>
+            <h3 className="text-xl font-bold mb-4 text-[var(--heading-color)]">{t('websites')}</h3>
             {websitesQuery.isLoading ? (
               <p className="text-sm text-[var(--text-muted)]">Loading websites...</p>
             ) : !websitesQuery.data || websitesQuery.data.length === 0 ? (
@@ -557,10 +581,20 @@ function Dashboard(): React.JSX.Element {
             <p className="text-sm text-[var(--text-muted)]">Loading database status...</p>
           ) : !mariadbStatusQuery.data?.installed ? (
             <div className="card p-8 bg-gradient-to-br from-purple-900/10 via-zinc-900/40 to-indigo-900/10 text-center max-w-xl mx-auto space-y-4">
-              <h3 className="text-xl font-bold text-purple-300">MariaDB</h3>
+              <h3 className="text-xl font-bold text-[var(--heading-color)]">MariaDB</h3>
               <p className="text-[var(--text-color)] text-sm">{t('mariadbNotInstalled')}</p>
+              <div className="space-y-1 text-left max-w-sm mx-auto">
+                <label className="block text-xs font-semibold text-[var(--text-muted)] uppercase tracking-wider">{t('dbRootPasswordLabel')}</label>
+                <input
+                  className="input"
+                  type="password"
+                  placeholder={t('dbRootPasswordPlaceholder')}
+                  value={dashboardDbRootPassword}
+                  onChange={function handleDashboardDbRootPasswordChange(e: React.ChangeEvent<HTMLInputElement>) { setDashboardDbRootPassword(e.target.value); }}
+                />
+              </div>
               <button
-                className="btn cursor-pointer"
+                className="btn cursor-pointer w-full max-w-sm"
                 onClick={function installDbService() { installMariaDbMutation.mutate(); }}
                 disabled={installMariaDbMutation.isPending}
               >
@@ -572,7 +606,7 @@ function Dashboard(): React.JSX.Element {
               <div className="grid gap-8 lg:grid-cols-3">
                 {/* Create Database Form */}
                 <section className="card p-6 lg:col-span-1 bg-gradient-to-br from-purple-900/5 via-zinc-900/40 to-indigo-900/5 h-fit">
-                  <h3 className="text-xl font-bold mb-4 text-purple-300">{t('createDb')}</h3>
+                  <h3 className="text-xl font-bold mb-4 text-[var(--heading-color)]">{t('createDb')}</h3>
                   <form onSubmit={handleCreateDatabase} className="space-y-4">
                     <div>
                       <label className="block text-xs font-semibold text-[var(--text-muted)] mb-1 uppercase tracking-wider">{t('dbName')}</label>
@@ -583,6 +617,29 @@ function Dashboard(): React.JSX.Element {
                         placeholder="my_database"
                         required
                       />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-[var(--text-muted)] mb-1 uppercase tracking-wider">{t('password')}</label>
+                      <input
+                        className="input"
+                        type="password"
+                        value={dbPasswordInput}
+                        onChange={function handleDbPasswordInputChange(event: React.ChangeEvent<HTMLInputElement>): void { setDbPasswordInput(event.target.value); }}
+                        placeholder="Database password (optional)"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-[var(--text-muted)] mb-1 uppercase tracking-wider">{t('dbCharset')}</label>
+                      <select
+                        className="input bg-[var(--input-bg)] text-[var(--input-text)] border border-[var(--input-border)] rounded-xl py-2 px-3 cursor-pointer"
+                        value={dbCharsetInput}
+                        onChange={function handleDbCharsetInputChange(event: React.ChangeEvent<HTMLSelectElement>): void { setDbCharsetInput(event.target.value); }}
+                      >
+                        <option value="utf8">utf8 ({t('light') === 'Светлая' ? 'по умолчанию' : 'default'})</option>
+                        <option value="utf8mb4">utf8mb4</option>
+                        <option value="cp1251">cp1251</option>
+                        <option value="latin1">latin1</option>
+                      </select>
                     </div>
                     {createDatabaseMutation.isError ? (
                       <p className="text-xs font-semibold text-rose-400 mt-2">
@@ -600,9 +657,9 @@ function Dashboard(): React.JSX.Element {
 
                 {/* Databases List */}
                 <section className="card p-6 lg:col-span-2 bg-gradient-to-br from-purple-900/5 via-zinc-900/40 to-indigo-900/5">
-                  <h3 className="text-xl font-bold mb-4 text-purple-300">{t('databases')}</h3>
+                  <h3 className="text-xl font-bold mb-4 text-[var(--heading-color)]">{t('databases')}</h3>
                   {databasesQuery.isLoading ? (
-                    <p className="text-sm text-[var(--text-muted)]">Loading databases...</p>
+                    <p className="text-sm text-[var(--text-muted)]">{t('loadingDatabases')}</p>
                   ) : !databasesQuery.data || databasesQuery.data.length === 0 ? (
                     <p className="text-sm text-[var(--text-muted)] italic py-4">{t('noDatabases')}</p>
                   ) : (
@@ -640,7 +697,7 @@ function Dashboard(): React.JSX.Element {
 
               {/* phpMyAdmin Panel */}
               <section className="card p-6 bg-gradient-to-br from-purple-900/5 via-zinc-900/40 to-indigo-900/5">
-                <h3 className="text-xl font-bold mb-4 text-purple-300">{t('phpMyAdminStatus')}</h3>
+                <h3 className="text-xl font-bold mb-4 text-[var(--heading-color)]">{t('phpMyAdminStatus')}</h3>
                 {phpmyadminStatusQuery.isLoading ? (
                   <p className="text-sm text-[var(--text-muted)]">Loading phpMyAdmin status...</p>
                 ) : phpmyadminStatusQuery.data?.installed ? (
@@ -659,11 +716,19 @@ function Dashboard(): React.JSX.Element {
                   <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
                     <p className="text-[var(--text-color)] text-sm">{t('phpMyAdminNotInstalled')}</p>
                     <button
-                      className="btn cursor-pointer"
+                      className="btn flex items-center justify-center gap-2 cursor-pointer"
                       onClick={function installPma() { installPhpmyadminMutation.mutate(); }}
                       disabled={installPhpmyadminMutation.isPending}
                     >
-                      {installPhpmyadminMutation.isPending ? t('pmaInstalling') : t('installPhpMyAdmin')}
+                      {installPhpmyadminMutation.isPending ? (
+                        <>
+                          <svg className="animate-spin h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                          </svg>
+                          {t('pmaInstalling')}
+                        </>
+                      ) : t('installPhpMyAdmin')}
                     </button>
                   </div>
                 )}
@@ -676,7 +741,7 @@ function Dashboard(): React.JSX.Element {
       {activeTab === 'settings' ? (
         <div className="grid gap-8 lg:grid-cols-2 animate-fadeIn">
           <section className="card p-6 bg-gradient-to-br from-purple-900/5 via-zinc-900/40 to-indigo-900/5">
-            <h3 className="text-xl font-bold mb-4 text-purple-300">{t('settings')}</h3>
+            <h3 className="text-xl font-bold mb-4 text-[var(--heading-color)]">{t('settings')}</h3>
 
             {/* Language Setting */}
             <div className="flex items-center justify-between py-4 border-b border-[var(--border-color)]">
@@ -691,7 +756,7 @@ function Dashboard(): React.JSX.Element {
             <div className="flex items-center justify-between py-4">
               <div>
                 <p className="font-semibold text-[var(--text-color)]">{t('theme')}</p>
-                <p className="text-xs text-[var(--text-muted)]">Switch between light and dark themes</p>
+                <p className="text-xs text-[var(--text-muted)]">{t('switchTheme')}</p>
               </div>
               <ThemeSwitch />
             </div>

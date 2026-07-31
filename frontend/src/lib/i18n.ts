@@ -55,7 +55,12 @@ const resources = {
       theme: 'Theme',
       light: 'Light',
       dark: 'Dark',
-      installing: 'Installing...'
+      installing: 'Installing...',
+      dbRootPasswordLabel: 'DB Root Password',
+      dbRootPasswordPlaceholder: 'Enter MariaDB root password',
+      dbCharset: 'Database Encoding',
+      loadingDatabases: 'Loading databases...',
+      switchTheme: 'Switch between light and dark themes'
     }
   },
   ru: {
@@ -112,7 +117,12 @@ const resources = {
       theme: 'Тема',
       light: 'Светлая',
       dark: 'Тёмная',
-      installing: 'Установка...'
+      installing: 'Установка...',
+      dbRootPasswordLabel: 'Пароль root базы данных',
+      dbRootPasswordPlaceholder: 'Введите пароль root для MariaDB',
+      dbCharset: 'Кодировка базы данных',
+      loadingDatabases: 'Загрузка баз данных...',
+      switchTheme: 'Переключение между светлой и тёмной темами'
     }
   }
 };
