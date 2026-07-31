@@ -48,7 +48,14 @@ const resources = {
       siteExistsError: 'A website with this domain has already been added.',
       dbExistsError: 'A database with this name already exists.',
       dbCreated: 'Database created successfully',
-      pmaInstalling: 'Installing phpMyAdmin...'
+      pmaInstalling: 'Installing phpMyAdmin...',
+      changeLanguage: 'Change application language',
+      noWebsites: 'No websites configured yet.',
+      noDatabases: 'No separate databases configured yet.',
+      theme: 'Theme',
+      light: 'Light',
+      dark: 'Dark',
+      installing: 'Installing...'
     }
   },
   ru: {
@@ -98,7 +105,14 @@ const resources = {
       siteExistsError: 'Сайт с таким доменом уже добавлен.',
       dbExistsError: 'База данных с таким именем уже существует.',
       dbCreated: 'База данных успешно создана',
-      pmaInstalling: 'Установка phpMyAdmin...'
+      pmaInstalling: 'Установка phpMyAdmin...',
+      changeLanguage: 'Сменить язык приложения',
+      noWebsites: 'Сайты еще не настроены.',
+      noDatabases: 'Базы данных еще не настроены.',
+      theme: 'Тема',
+      light: 'Светлая',
+      dark: 'Тёмная',
+      installing: 'Установка...'
     }
   }
 };
