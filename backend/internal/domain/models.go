@@ -18,6 +18,12 @@ type ServiceState struct {
 	Installed bool      `json:"installed"`
 	UpdatedAt time.Time `json:"updatedAt"`
 }
+type Website struct {
+	ID        uint      `gorm:"primaryKey" json:"id"`
+	Domain    string    `gorm:"uniqueIndex;size:120;not null" json:"domain"`
+	Path      string    `gorm:"not null" json:"path"`
+	CreatedAt time.Time `json:"createdAt"`
+}
 type DashboardStats struct {
 	CPUUsage  float64 `json:"cpuUsage"`
 	RAMUsage  float64 `json:"ramUsage"`

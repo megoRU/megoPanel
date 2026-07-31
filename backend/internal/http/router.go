@@ -4,7 +4,9 @@ import (
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
+	"gorm.io/gorm"
 	"mego-panel/backend/internal/config"
+	"mego-panel/backend/internal/domain"
 	"mego-panel/backend/internal/service"
 	"net/http"
 )
@@ -14,6 +16,7 @@ type RouterDeps struct {
 	Auth      *service.AuthService
 	Dashboard *service.DashboardService
 	Install   *service.InstallService
+	DB        *gorm.DB
 }
 
 func NewRouter(d RouterDeps) *gin.Engine {
@@ -77,6 +80,38 @@ func NewRouter(d RouterDeps) *gin.Engine {
 	protected.Use(authMiddleware(d.Auth), csrfMiddleware())
 	protected.GET("/auth/me", func(c *gin.Context) { c.JSON(200, gin.H{"authenticated": true}) })
 	protected.GET("/dashboard", func(c *gin.Context) { c.JSON(200, d.Dashboard.Stats()) })
+	protected.GET("/websites", func(c *gin.Context) {
+		var sites []domain.Website
+		if err := d.DB.Find(&sites).Error; err != nil {
+			c.JSON(400, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(200, sites)
+	})
+	protected.POST("/websites", func(c *gin.Context) {
+		var req struct {
+			Domain string `json:"domain"`
+			Path   string `json:"path"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(400, gin.H{"error": err.Error()})
+			return
+		}
+		site := domain.Website{Domain: req.Domain, Path: req.Path}
+		if err := d.DB.Create(&site).Error; err != nil {
+			c.JSON(400, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(200, site)
+	})
+	protected.DELETE("/websites/:id", func(c *gin.Context) {
+		id := c.Param("id")
+		if err := d.DB.Delete(&domain.Website{}, id).Error; err != nil {
+			c.JSON(400, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(200, gin.H{"ok": true})
+	})
 	protected.GET("/install/:name/status", func(c *gin.Context) { state, err := d.Install.Status(c.Param("name")); respond(c, false, state, err) })
 	protected.POST("/install/mariadb", func(c *gin.Context) {
 		var req struct {
