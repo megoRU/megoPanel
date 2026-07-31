@@ -136,7 +136,7 @@ func getDiskUsage() (used float64, total float64) {
 	return used / (1024 * 1024 * 1024), all / (1024 * 1024 * 1024)
 }
 
-func findPHPFpmSocket() string {
+func findPHPFpmSocket(phpServiceName string) string {
 	paths := []string{"/run/php", "/var/run/php"}
 	for _, p := range paths {
 		files, err := os.ReadDir(p)
@@ -148,6 +148,10 @@ func findPHPFpmSocket() string {
 				return p + "/" + f.Name()
 			}
 		}
+	}
+	// Try to construct from phpServiceName (e.g. php8.3-fpm -> /run/php/php8.3-fpm.sock)
+	if strings.HasPrefix(phpServiceName, "php") && strings.HasSuffix(phpServiceName, "-fpm") {
+		return "/run/php/" + phpServiceName + ".sock"
 	}
 	return "/run/php/php-fpm.sock" // fallback
 }
@@ -282,7 +286,18 @@ $cfg['Servers'][$i]['AllowNoPassword'] = false;
 	_ = os.WriteFile("/var/www/phpmyadmin/config.inc.php", []byte(pmaConfig), 0644)
 	_ = os.Chown("/var/www/phpmyadmin", 33, 33)
 
-	socketPath := findPHPFpmSocket()
+	phpServiceName := "php-fpm"
+	if _, err := exec.LookPath("systemctl"); err == nil {
+		svcCmd := exec.Command("sh", "-c", "systemctl list-unit-files | grep -E '^php[0-9.]+-fpm\\.service' | head -n 1 | awk '{print $1}'")
+		output, err := svcCmd.Output()
+		if err == nil && len(strings.TrimSpace(string(output))) > 0 {
+			phpServiceName = strings.TrimSuffix(strings.TrimSpace(string(output)), ".service")
+		}
+	}
+	_ = s.pm.Enable(phpServiceName)
+	_ = s.pm.Restart(phpServiceName)
+
+	socketPath := findPHPFpmSocket(phpServiceName)
 	nginxConfig := `server {
     listen 8080 default_server;
     listen [::]:8080 default_server;
@@ -301,16 +316,6 @@ $cfg['Servers'][$i]['AllowNoPassword'] = false;
 	_ = os.Remove("/etc/nginx/sites-enabled/phpmyadmin")
 	_ = os.Symlink("/etc/nginx/sites-available/phpmyadmin", "/etc/nginx/sites-enabled/phpmyadmin")
 
-	phpServiceName := "php-fpm"
-	if _, err := exec.LookPath("systemctl"); err == nil {
-		svcCmd := exec.Command("sh", "-c", "systemctl list-unit-files | grep -E '^php[0-9.]+-fpm\\.service' | head -n 1 | awk '{print $1}'")
-		output, err := svcCmd.Output()
-		if err == nil && len(strings.TrimSpace(string(output))) > 0 {
-			phpServiceName = strings.TrimSuffix(strings.TrimSpace(string(output)), ".service")
-		}
-	}
-	_ = s.pm.Enable(phpServiceName)
-	_ = s.pm.Restart(phpServiceName)
 	_ = s.pm.Restart("nginx")
 
 	state := &domain.ServiceState{Name: "phpmyadmin", Installed: true, UpdatedAt: time.Now()}
