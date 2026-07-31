@@ -1,6 +1,8 @@
 package http
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
@@ -10,9 +12,11 @@ import (
 	"mego-panel/backend/internal/service"
 	"net"
 	"net/http"
+	"os"
 	"os/exec"
 	"regexp"
 	"strings"
+	"time"
 )
 
 type RouterDeps struct {
@@ -264,6 +268,105 @@ func NewRouter(d RouterDeps) *gin.Engine {
 			}
 		}
 		c.JSON(200, gin.H{"ok": true})
+	})
+
+	protected.POST("/databases/autologin", func(c *gin.Context) {
+		var req struct {
+			DB string `json:"db"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(400, gin.H{"error": err.Error()})
+			return
+		}
+
+		// Verify phpmyadmin directory exists
+		if _, err := os.Stat("/var/www/phpmyadmin"); os.IsNotExist(err) {
+			c.JSON(400, gin.H{"error": "phpMyAdmin is not installed"})
+			return
+		}
+
+		// Get root password
+		var passwordSetting domain.Setting
+		var rootPassword string
+		if err := d.DB.First(&passwordSetting, "key = ?", "mariadb_root_password").Error; err == nil {
+			rootPassword = passwordSetting.Value
+		}
+
+		// Cleanup old tokens
+		if files, err := os.ReadDir("/var/www/phpmyadmin"); err == nil {
+			for _, f := range files {
+				if strings.HasPrefix(f.Name(), "token_") {
+					info, err := f.Info()
+					if err == nil && time.Since(info.ModTime()) > 60*time.Second {
+						_ = os.Remove("/var/www/phpmyadmin/" + f.Name())
+					}
+				}
+			}
+		}
+
+		// Generate random token
+		tokenBytes := make([]byte, 16)
+		if _, err := rand.Read(tokenBytes); err != nil {
+			c.JSON(500, gin.H{"error": "failed to generate token"})
+			return
+		}
+		token := hex.EncodeToString(tokenBytes)
+
+		// Create token file
+		tokenPath := "/var/www/phpmyadmin/token_" + token
+		_ = os.WriteFile(tokenPath, []byte(""), 0644)
+		_ = os.Chown(tokenPath, 33, 33)
+
+		// Rewrite config.inc.php and autologin.php to ensure they are up to date!
+		blowfishBytes := make([]byte, 16)
+		_, _ = rand.Read(blowfishBytes)
+		blowfishSecret := hex.EncodeToString(blowfishBytes)
+
+		pmaConfig := `<?php
+$cfg['blowfish_secret'] = '` + blowfishSecret + `';
+$i = 0;
+$i++;
+
+$autologin = false;
+if (isset($_COOKIE['pma_autologin_token'])) {
+    $token = preg_replace('/[^a-f0-9]/', '', $_COOKIE['pma_autologin_token']);
+    if ($token && file_exists('/var/www/phpmyadmin/token_' . $token)) {
+        $mtime = filemtime('/var/www/phpmyadmin/token_' . $token);
+        if (time() - $mtime < 30) {
+            $autologin = true;
+        }
+    }
+}
+
+if ($autologin) {
+    $cfg['Servers'][$i]['auth_type'] = 'config';
+    $cfg['Servers'][$i]['user'] = 'root';
+    $cfg['Servers'][$i]['password'] = '` + strings.ReplaceAll(rootPassword, "'", "\\'") + `';
+} else {
+    $cfg['Servers'][$i]['auth_type'] = 'cookie';
+}
+$cfg['Servers'][$i]['host'] = 'localhost';
+$cfg['Servers'][$i]['compress'] = false;
+$cfg['Servers'][$i]['AllowNoPassword'] = false;
+`
+		_ = os.WriteFile("/var/www/phpmyadmin/config.inc.php", []byte(pmaConfig), 0644)
+		_ = os.Chown("/var/www/phpmyadmin/config.inc.php", 33, 33)
+
+		autologinPHP := `<?php
+if (isset($_GET['token'])) {
+    $token = preg_replace('/[^a-f0-9]/', '', $_GET['token']);
+    if ($token && file_exists('/var/www/phpmyadmin/token_' . $token)) {
+        setcookie('pma_autologin_token', $token, 0, '/');
+    }
+}
+$db = isset($_GET['db']) ? urlencode($_GET['db']) : '';
+header('Location: index.php' . ($db ? '?db=' . $db : ''));
+exit;
+`
+		_ = os.WriteFile("/var/www/phpmyadmin/autologin.php", []byte(autologinPHP), 0644)
+		_ = os.Chown("/var/www/phpmyadmin/autologin.php", 33, 33)
+
+		c.JSON(200, gin.H{"token": token, "db": req.DB})
 	})
 
 	protected.GET("/install/:name/status", func(c *gin.Context) { state, err := d.Install.Status(c.Param("name")); respond(c, false, state, err) })
