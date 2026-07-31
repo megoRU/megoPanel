@@ -287,16 +287,55 @@ func (s *InstallService) InstallPhpMyAdmin() (*domain.ServiceState, error) {
 	if len(blowfishSecret) > 32 {
 		blowfishSecret = blowfishSecret[:32]
 	}
+
+	var rootPassword string
+	if val, found, err := s.settings.Get("mariadb_root_password"); err == nil && found {
+		rootPassword = val
+	}
+
 	pmaConfig := `<?php
 $cfg['blowfish_secret'] = '` + blowfishSecret + `';
 $i = 0;
 $i++;
-$cfg['Servers'][$i]['auth_type'] = 'cookie';
+
+$autologin = false;
+if (isset($_COOKIE['pma_autologin_token'])) {
+    $token = preg_replace('/[^a-f0-9]/', '', $_COOKIE['pma_autologin_token']);
+    if ($token && file_exists('/var/www/phpmyadmin/token_' . $token)) {
+        $mtime = filemtime('/var/www/phpmyadmin/token_' . $token);
+        if (time() - $mtime < 30) {
+            $autologin = true;
+        }
+    }
+}
+
+if ($autologin) {
+    $cfg['Servers'][$i]['auth_type'] = 'config';
+    $cfg['Servers'][$i]['user'] = 'root';
+    $cfg['Servers'][$i]['password'] = '` + strings.ReplaceAll(rootPassword, "'", "\\'") + `';
+} else {
+    $cfg['Servers'][$i]['auth_type'] = 'cookie';
+}
 $cfg['Servers'][$i]['host'] = 'localhost';
 $cfg['Servers'][$i]['compress'] = false;
 $cfg['Servers'][$i]['AllowNoPassword'] = false;
 `
 	_ = os.WriteFile("/var/www/phpmyadmin/config.inc.php", []byte(pmaConfig), 0644)
+	_ = os.Chown("/var/www/phpmyadmin/config.inc.php", 33, 33)
+
+	autologinPHP := `<?php
+if (isset($_GET['token'])) {
+    $token = preg_replace('/[^a-f0-9]/', '', $_GET['token']);
+    if ($token && file_exists('/var/www/phpmyadmin/token_' . $token)) {
+        setcookie('pma_autologin_token', $token, 0, '/');
+    }
+}
+$db = isset($_GET['db']) ? urlencode($_GET['db']) : '';
+header('Location: index.php' . ($db ? '?db=' . $db : ''));
+exit;
+`
+	_ = os.WriteFile("/var/www/phpmyadmin/autologin.php", []byte(autologinPHP), 0644)
+	_ = os.Chown("/var/www/phpmyadmin/autologin.php", 33, 33)
 	_ = os.Chown("/var/www/phpmyadmin", 33, 33)
 
 	phpServiceName := "php-fpm"

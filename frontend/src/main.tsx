@@ -409,6 +409,7 @@ function Dashboard(): React.JSX.Element {
   const [dbNameInput, setDbNameInput] = React.useState('');
   const [dbCharsetInput, setDbCharsetInput] = React.useState('utf8');
   const [dbPasswordInput, setDbPasswordInput] = React.useState('');
+  const [deleteConfirmDb, setDeleteConfirmDb] = React.useState<string | null>(null);
 
   function handleCreateDatabase(event: React.FormEvent) {
     event.preventDefault();
@@ -625,7 +626,7 @@ function Dashboard(): React.JSX.Element {
                         type="password"
                         value={dbPasswordInput}
                         onChange={function handleDbPasswordInputChange(event: React.ChangeEvent<HTMLInputElement>): void { setDbPasswordInput(event.target.value); }}
-                        placeholder="Database password (optional)"
+                        placeholder={t('password')}
                       />
                     </div>
                     <div>
@@ -635,7 +636,7 @@ function Dashboard(): React.JSX.Element {
                         value={dbCharsetInput}
                         onChange={function handleDbCharsetInputChange(event: React.ChangeEvent<HTMLSelectElement>): void { setDbCharsetInput(event.target.value); }}
                       >
-                        <option value="utf8">utf8 ({t('light') === 'Светлая' ? 'по умолчанию' : 'default'})</option>
+                        <option value="utf8">utf8</option>
                         <option value="utf8mb4">utf8mb4</option>
                         <option value="cp1251">cp1251</option>
                         <option value="latin1">latin1</option>
@@ -673,17 +674,59 @@ function Dashboard(): React.JSX.Element {
                         </thead>
                         <tbody>
                           {databasesQuery.data.map(function renderDatabase(db: string): React.JSX.Element {
+                            const isConfirming = deleteConfirmDb === db;
                             return (
                               <tr className="border-b border-[var(--border-color)] hover:bg-[var(--table-hover)] transition duration-150" key={db}>
                                 <td className="py-3 px-4 font-semibold text-[var(--text-color)]">{db}</td>
                                 <td className="py-3 px-4 text-right">
-                                  <button
-                                    className="btn-danger cursor-pointer"
-                                    onClick={function deleteSelectedDatabase(): void { deleteDatabaseMutation.mutate(db); }}
-                                    disabled={deleteDatabaseMutation.isPending}
-                                  >
-                                    {t('delete')}
-                                  </button>
+                                  <div className="flex items-center justify-end gap-2">
+                                    {isConfirming ? (
+                                      <>
+                                        <button
+                                          className="btn-danger cursor-pointer py-1 px-3 text-xs font-bold"
+                                          onClick={function confirmDelete(): void {
+                                            deleteDatabaseMutation.mutate(db, {
+                                              onSuccess: function() {
+                                                setDeleteConfirmDb(null);
+                                              }
+                                            });
+                                          }}
+                                          disabled={deleteDatabaseMutation.isPending}
+                                        >
+                                          {t('confirmDelete')}
+                                        </button>
+                                        <button
+                                          className="btn cursor-pointer py-1 px-3 text-xs font-bold bg-neutral-600 hover:bg-neutral-500 text-white"
+                                          style={{ background: '#71717a', boxShadow: 'none' }}
+                                          onClick={function cancelDelete(): void { setDeleteConfirmDb(null); }}
+                                        >
+                                          {t('cancel')}
+                                        </button>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <button
+                                          className="btn cursor-pointer py-1 px-3 text-xs font-bold"
+                                          onClick={function openAutologin(): void {
+                                            api.post<{ token: string; db: string }>('/databases/autologin', { db }).then(function(res) {
+                                              const autologinUrl = window.location.protocol + '//' + window.location.hostname + ':8080/autologin.php?token=' + res.data.token + '&db=' + res.data.db;
+                                              window.open(autologinUrl, '_blank');
+                                            }).catch(function(err) {
+                                              console.error('Autologin failed:', err);
+                                            });
+                                          }}
+                                        >
+                                          {t('open')}
+                                        </button>
+                                        <button
+                                          className="btn-danger cursor-pointer py-1 px-3 text-xs font-bold"
+                                          onClick={function startDelete(): void { setDeleteConfirmDb(db); }}
+                                        >
+                                          {t('delete')}
+                                        </button>
+                                      </>
+                                    )}
+                                  </div>
                                 </td>
                               </tr>
                             );
