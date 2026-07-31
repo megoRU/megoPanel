@@ -31,7 +31,7 @@ func New(cfg *config.Config, logger *slog.Logger) (*App, error) {
 	services := repository.NewServiceRepository(db)
 	auth := service.NewAuthService(admins, settings, cfg)
 	dashboard := service.NewDashboardService()
-	install := service.NewInstallService(services, pm)
+	install := service.NewInstallService(services, pm, settings)
 	router := api.NewRouter(api.RouterDeps{Config: cfg, Auth: auth, Dashboard: dashboard, Install: install, DB: db})
 	return &App{cfg: cfg, logger: logger, router: router}, nil
 }

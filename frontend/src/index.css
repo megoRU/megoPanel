@@ -15,6 +15,7 @@
   --table-header: #94a3b8;
   --title-gradient-from: #ffffff;
   --title-gradient-to: #94a3b8;
+  --heading-color: #c084fc;
   color-scheme: dark;
   font-family: Inter, ui-sans-serif, system-ui, sans-serif;
   background: var(--bg-color);
@@ -36,6 +37,7 @@
   --table-header: #475569;
   --title-gradient-from: #0f172a;
   --title-gradient-to: #475569;
+  --heading-color: #0f172a;
   color-scheme: light;
 }
 

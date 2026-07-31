@@ -134,10 +134,23 @@ func NewRouter(d RouterDeps) *gin.Engine {
 		c.JSON(200, gin.H{"ok": true})
 	})
 	protected.GET("/databases", func(c *gin.Context) {
-		cmd := exec.Command("mysql", "-u", "root", "-N", "-e", "SHOW DATABASES;")
+		var passwordSetting domain.Setting
+		var rootPassword string
+		if err := d.DB.First(&passwordSetting, "key = ?", "mariadb_root_password").Error; err == nil {
+			rootPassword = passwordSetting.Value
+		}
+
+		var args []string
+		if rootPassword != "" {
+			args = append(args, "-u", "root", "-p"+rootPassword, "-N", "-e", "SHOW DATABASES;")
+		} else {
+			args = append(args, "-u", "root", "-N", "-e", "SHOW DATABASES;")
+		}
+
+		cmd := exec.Command("mysql", args...)
 		output, err := cmd.Output()
 		if err != nil {
-			cmd = exec.Command("mariadb", "-u", "root", "-N", "-e", "SHOW DATABASES;")
+			cmd = exec.Command("mariadb", args...)
 			output, err = cmd.Output()
 		}
 		if err != nil {
@@ -162,7 +175,9 @@ func NewRouter(d RouterDeps) *gin.Engine {
 
 	protected.POST("/databases", func(c *gin.Context) {
 		var req struct {
-			Name string `json:"name"`
+			Name     string `json:"name"`
+			Charset  string `json:"charset"`
+			Password string `json:"password"`
 		}
 		if err := c.ShouldBindJSON(&req); err != nil {
 			c.JSON(400, gin.H{"error": err.Error()})
@@ -179,10 +194,35 @@ func NewRouter(d RouterDeps) *gin.Engine {
 			return
 		}
 
-		createCmd := "CREATE DATABASE `" + req.Name + "`;"
-		cmd := exec.Command("mysql", "-u", "root", "-e", createCmd)
+		charset := "utf8"
+		if req.Charset == "utf8mb4" || req.Charset == "cp1251" || req.Charset == "latin1" {
+			charset = req.Charset
+		}
+
+		createCmd := "CREATE DATABASE `" + req.Name + "` CHARACTER SET " + charset + ";"
+		if req.Password != "" {
+			escapedPassword := strings.ReplaceAll(req.Password, "'", "\\'")
+			createCmd += " CREATE USER IF NOT EXISTS '" + req.Name + "'@'localhost' IDENTIFIED BY '" + escapedPassword + "';"
+			createCmd += " GRANT ALL PRIVILEGES ON `" + req.Name + "`.* TO '" + req.Name + "'@'localhost';"
+			createCmd += " FLUSH PRIVILEGES;"
+		}
+
+		var passwordSetting domain.Setting
+		var rootPassword string
+		if err := d.DB.First(&passwordSetting, "key = ?", "mariadb_root_password").Error; err == nil {
+			rootPassword = passwordSetting.Value
+		}
+
+		var args []string
+		if rootPassword != "" {
+			args = append(args, "-u", "root", "-p"+rootPassword, "-e", createCmd)
+		} else {
+			args = append(args, "-u", "root", "-e", createCmd)
+		}
+
+		cmd := exec.Command("mysql", args...)
 		if err := cmd.Run(); err != nil {
-			cmd = exec.Command("mariadb", "-u", "root", "-e", createCmd)
+			cmd = exec.Command("mariadb", args...)
 			if err := cmd.Run(); err != nil {
 				c.JSON(400, gin.H{"error": "failed to create database: " + err.Error()})
 				return
@@ -200,10 +240,24 @@ func NewRouter(d RouterDeps) *gin.Engine {
 			return
 		}
 
-		dropCmd := "DROP DATABASE `" + name + "`;"
-		cmd := exec.Command("mysql", "-u", "root", "-e", dropCmd)
+		dropCmd := "DROP DATABASE `" + name + "`; DROP USER IF EXISTS '" + name + "'@'localhost';"
+
+		var passwordSetting domain.Setting
+		var rootPassword string
+		if err := d.DB.First(&passwordSetting, "key = ?", "mariadb_root_password").Error; err == nil {
+			rootPassword = passwordSetting.Value
+		}
+
+		var args []string
+		if rootPassword != "" {
+			args = append(args, "-u", "root", "-p"+rootPassword, "-e", dropCmd)
+		} else {
+			args = append(args, "-u", "root", "-e", dropCmd)
+		}
+
+		cmd := exec.Command("mysql", args...)
 		if err := cmd.Run(); err != nil {
-			cmd = exec.Command("mariadb", "-u", "root", "-e", dropCmd)
+			cmd = exec.Command("mariadb", args...)
 			if err := cmd.Run(); err != nil {
 				c.JSON(400, gin.H{"error": "failed to delete database: " + err.Error()})
 				return
@@ -215,10 +269,11 @@ func NewRouter(d RouterDeps) *gin.Engine {
 	protected.GET("/install/:name/status", func(c *gin.Context) { state, err := d.Install.Status(c.Param("name")); respond(c, false, state, err) })
 	protected.POST("/install/mariadb", func(c *gin.Context) {
 		var req struct {
-			RemoteAccess bool `json:"remoteAccess"`
+			RemoteAccess bool   `json:"remoteAccess"`
+			RootPassword string `json:"rootPassword"`
 		}
 		_ = c.ShouldBindJSON(&req)
-		state, err := d.Install.InstallMariaDB(req.RemoteAccess)
+		state, err := d.Install.InstallMariaDB(req.RemoteAccess, req.RootPassword)
 		respond(c, false, state, err)
 	})
 	protected.POST("/install/nginx", func(c *gin.Context) { state, err := d.Install.InstallNginx(); respond(c, false, state, err) })
