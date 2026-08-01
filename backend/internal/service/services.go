@@ -259,10 +259,8 @@ func (s *InstallService) InstallNginx() (*domain.ServiceState, error) {
 
 func (s *InstallService) InstallPhpMyAdmin() (*domain.ServiceState, error) {
 	packages := []string{"nginx", "php-fpm", "php-mysql", "php-mbstring", "php-xml", "php-curl", "php-zip", "php-gd", "tar", "curl"}
-	for _, packageName := range packages {
-		if err := s.pm.Install(packageName); err != nil {
-			return nil, err
-		}
+	if err := s.pm.InstallMany(packages); err != nil {
+		return nil, err
 	}
 
 	if err := os.RemoveAll("/var/www/phpmyadmin"); err != nil {
@@ -360,6 +358,8 @@ exit;
 			phpServiceName = strings.TrimSuffix(strings.TrimSpace(string(output)), ".service")
 		}
 	}
+	resetFailedCmd := exec.Command("systemctl", "reset-failed", phpServiceName)
+	_ = resetFailedCmd.Run()
 	if err := s.pm.Enable(phpServiceName); err != nil {
 		return nil, err
 	}
