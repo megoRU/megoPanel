@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	CurrentVersion = "v1.0.0"
+	CurrentVersion = "v1.1.0"
 	GitHubAPIURL   = "https://api.github.com/repos/megoRU/megoPanel/releases/latest"
 )
 
@@ -212,7 +212,9 @@ func isNewerVersion(current, latest string) bool {
 }
 
 func cleanVersion(v string) string {
+	v = strings.TrimSpace(v)
 	v = strings.TrimPrefix(v, "v")
+	v = strings.TrimPrefix(v, "V")
 	return strings.TrimSpace(v)
 }
 

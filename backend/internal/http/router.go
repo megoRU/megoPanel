@@ -449,7 +449,11 @@ func NewRouter(d RouterDeps) *gin.Engine {
 	})
 	protected.POST("/install/nginx", func(c *gin.Context) { state, err := d.Install.InstallNginx(); respond(c, false, state, err) })
 	protected.POST("/install/phpmyadmin", func(c *gin.Context) {
-		state, err := d.Install.InstallPhpMyAdmin()
+		port := "8888"
+		if parts := strings.Split(d.Config.Server.Address, ":"); len(parts) > 0 && parts[len(parts)-1] != "" {
+			port = parts[len(parts)-1]
+		}
+		state, err := d.Install.InstallPhpMyAdmin(port)
 		respond(c, false, state, err)
 	})
 	protected.GET("/ws", func(c *gin.Context) {
