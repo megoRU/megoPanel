@@ -55,6 +55,15 @@ func (s *UpdateService) CheckUpdate() (*UpdateStatus, error) {
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == http.StatusNotFound {
+		// Return friendly status if no release exists yet on GitHub
+		return &UpdateStatus{
+			CurrentVersion: CurrentVersion,
+			LatestVersion:  CurrentVersion,
+			HasUpdate:      false,
+		}, nil
+	}
+
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("github api returned status %d", resp.StatusCode)
 	}
