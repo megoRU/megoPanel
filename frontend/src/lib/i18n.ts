@@ -69,7 +69,16 @@ const resources = {
       setupDescription: 'Setup MegoPanel on your environment',
       nginxDescription: 'Nginx acts as a web server and reverse proxy.',
       phpmyadminDescription: 'phpMyAdmin provides a web interface for database administration.',
-      uptimeLabel: 'Uptime'
+      uptimeLabel: 'Uptime',
+      updateCheck: 'Check for Updates',
+      updateChecking: 'Checking...',
+      updateInstall: 'Install Update',
+      updateInstalling: 'Installing and restarting...',
+      updateLatest: 'You are using the latest version.',
+      updateNewAvailable: 'New version available:',
+      updateCurrent: 'Current version:',
+      updateLatestVersion: 'Latest version:',
+      updateFailed: 'Failed to update. Please check server logs.'
     }
   },
   ru: {
@@ -140,7 +149,16 @@ const resources = {
       setupDescription: 'Настройка MegoPanel в вашей системе',
       nginxDescription: 'Nginx выступает в качестве веб-сервера и обратного прокси.',
       phpmyadminDescription: 'phpMyAdmin предоставляет веб-интерфейс для администрирования баз данных.',
-      uptimeLabel: 'Время работы'
+      uptimeLabel: 'Время работы',
+      updateCheck: 'Проверить обновления',
+      updateChecking: 'Проверка...',
+      updateInstall: 'Установить обновление',
+      updateInstalling: 'Установка и перезапуск...',
+      updateLatest: 'Вы используете самую свежую версию.',
+      updateNewAvailable: 'Доступна новая версия:',
+      updateCurrent: 'Текущая версия:',
+      updateLatestVersion: 'Последняя версия:',
+      updateFailed: 'Не удалось установить обновление. Пожалуйста, проверьте логи.'
     }
   }
 };

@@ -24,6 +24,7 @@ type RouterDeps struct {
 	Auth      *service.AuthService
 	Dashboard *service.DashboardService
 	Install   *service.InstallService
+	Update    *service.UpdateService
 	DB        *gorm.DB
 }
 
@@ -396,6 +397,18 @@ exit;
 		c.JSON(200, gin.H{"token": token, "db": req.DB})
 	})
 
+	protected.GET("/update/status", func(c *gin.Context) {
+		status, err := d.Update.CheckUpdate()
+		respond(c, false, status, err)
+	})
+	protected.POST("/update/upgrade", func(c *gin.Context) {
+		err := d.Update.Upgrade()
+		if err != nil {
+			c.JSON(400, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(200, gin.H{"ok": true})
+	})
 	protected.GET("/install/:name/status", func(c *gin.Context) { state, err := d.Install.Status(c.Param("name")); respond(c, false, state, err) })
 	protected.POST("/install/mariadb", func(c *gin.Context) {
 		var req struct {
