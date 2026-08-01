@@ -232,6 +232,9 @@ func NewRouter(d RouterDeps) *gin.Engine {
 				return
 			}
 		}
+		if req.Password != "" {
+			_ = d.DB.Save(&domain.Setting{Key: "db_password_" + req.Name, Value: req.Password})
+		}
 		c.JSON(200, gin.H{"ok": true, "name": req.Name})
 	})
 
@@ -267,6 +270,7 @@ func NewRouter(d RouterDeps) *gin.Engine {
 				return
 			}
 		}
+		_ = d.DB.Delete(&domain.Setting{}, "key = ?", "db_password_"+name)
 		c.JSON(200, gin.H{"ok": true})
 	})
 
@@ -292,6 +296,16 @@ func NewRouter(d RouterDeps) *gin.Engine {
 			rootPassword = passwordSetting.Value
 		}
 
+		dbUser := "root"
+		dbPassword := rootPassword
+		if req.DB != "" {
+			var dbPasswordSetting domain.Setting
+			if err := d.DB.First(&dbPasswordSetting, "key = ?", "db_password_"+req.DB).Error; err == nil {
+				dbUser = req.DB
+				dbPassword = dbPasswordSetting.Value
+			}
+		}
+
 		// Cleanup old tokens
 		if files, err := os.ReadDir("/var/www/phpmyadmin"); err == nil {
 			for _, f := range files {
@@ -314,7 +328,8 @@ func NewRouter(d RouterDeps) *gin.Engine {
 
 		// Create token file
 		tokenPath := "/var/www/phpmyadmin/token_" + token
-		_ = os.WriteFile(tokenPath, []byte(""), 0644)
+		tokenContent := dbUser + ":" + dbPassword
+		_ = os.WriteFile(tokenPath, []byte(tokenContent), 0644)
 		_ = os.Chown(tokenPath, 33, 33)
 
 		// Rewrite config.inc.php and autologin.php to ensure they are up to date!
@@ -328,20 +343,32 @@ $i = 0;
 $i++;
 
 $autologin = false;
+$user = 'root';
+$password = '';
+
 if (isset($_COOKIE['pma_autologin_token'])) {
     $token = preg_replace('/[^a-f0-9]/', '', $_COOKIE['pma_autologin_token']);
-    if ($token && file_exists('/var/www/phpmyadmin/token_' . $token)) {
-        $mtime = filemtime('/var/www/phpmyadmin/token_' . $token);
+    $token_file = '/var/www/phpmyadmin/token_' . $token;
+    if ($token && file_exists($token_file)) {
+        $mtime = filemtime($token_file);
         if (time() - $mtime < 30) {
-            $autologin = true;
+            $content = file_get_contents($token_file);
+            $parts = explode(':', $content, 2);
+            if (count($parts) === 2) {
+                $user = $parts[0];
+                $password = $parts[1];
+                $autologin = true;
+            }
         }
+        @unlink($token_file);
     }
+    setcookie('pma_autologin_token', '', time() - 3600, '/');
 }
 
 if ($autologin) {
     $cfg['Servers'][$i]['auth_type'] = 'config';
-    $cfg['Servers'][$i]['user'] = 'root';
-    $cfg['Servers'][$i]['password'] = '` + strings.ReplaceAll(rootPassword, "'", "\\'") + `';
+    $cfg['Servers'][$i]['user'] = $user;
+    $cfg['Servers'][$i]['password'] = $password;
 } else {
     $cfg['Servers'][$i]['auth_type'] = 'cookie';
 }

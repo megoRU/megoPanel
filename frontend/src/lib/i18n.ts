@@ -63,7 +63,13 @@ const resources = {
       dbRootPasswordPlaceholder: 'Enter MariaDB root password',
       dbCharset: 'Database Encoding',
       loadingDatabases: 'Loading databases...',
-      switchTheme: 'Switch between light and dark themes'
+      switchTheme: 'Switch between light and dark themes',
+      loading: 'Loading...',
+      creationFailed: 'Creation failed',
+      setupDescription: 'Setup MegoPanel on your environment',
+      nginxDescription: 'Nginx acts as a web server and reverse proxy.',
+      phpmyadminDescription: 'phpMyAdmin provides a web interface for database administration.',
+      uptimeLabel: 'Uptime'
     }
   },
   ru: {
@@ -128,7 +134,13 @@ const resources = {
       dbRootPasswordPlaceholder: 'Введите пароль root для MariaDB',
       dbCharset: 'Кодировка базы данных',
       loadingDatabases: 'Загрузка баз данных...',
-      switchTheme: 'Переключение между светлой и тёмной темами'
+      switchTheme: 'Переключение между светлой и тёмной темами',
+      loading: 'Загрузка...',
+      creationFailed: 'Ошибка создания',
+      setupDescription: 'Настройка MegoPanel в вашей системе',
+      nginxDescription: 'Nginx выступает в качестве веб-сервера и обратного прокси.',
+      phpmyadminDescription: 'phpMyAdmin предоставляет веб-интерфейс для администрирования баз данных.',
+      uptimeLabel: 'Время работы'
     }
   }
 };
