@@ -293,36 +293,10 @@ $cfg['blowfish_secret'] = '` + blowfishSecret + `';
 $i = 0;
 $i++;
 
-if (session_status() === PHP_SESSION_NONE) {
-    session_start();
-}
-
-$autologin = false;
-if (isset($_COOKIE['pma_autologin_token'])) {
-    $token = preg_replace('/[^a-f0-9]/', '', $_COOKIE['pma_autologin_token']);
-    $token_file = '/var/www/phpmyadmin/token_' . $token;
-    if ($token && file_exists($token_file)) {
-        $mtime = filemtime($token_file);
-        if (time() - $mtime < 30) {
-            $content = file_get_contents($token_file);
-            $parts = explode(':', $content, 2);
-            if (count($parts) === 2) {
-                $_SESSION['pma_autologin_user'] = $parts[0];
-                $_SESSION['pma_autologin_pass'] = $parts[1];
-            }
-        }
-        @unlink($token_file);
-    }
-    setcookie('pma_autologin_token', '', time() - 3600, '/');
-}
-
-if (isset($_SESSION['pma_autologin_user']) && isset($_SESSION['pma_autologin_pass'])) {
-    $cfg['Servers'][$i]['auth_type'] = 'config';
-    $cfg['Servers'][$i]['user'] = $_SESSION['pma_autologin_user'];
-    $cfg['Servers'][$i]['password'] = $_SESSION['pma_autologin_pass'];
-} else {
-    $cfg['Servers'][$i]['auth_type'] = 'cookie';
-}
+$cfg['Servers'][$i]['auth_type'] = 'signon';
+$cfg['Servers'][$i]['SignonSession'] = 'SignonSession';
+$cfg['Servers'][$i]['SignonURL'] = 'signon.php';
+$cfg['Servers'][$i]['LogoutURL'] = 'signon.php?action=logout';
 $cfg['Servers'][$i]['host'] = 'localhost';
 $cfg['Servers'][$i]['compress'] = false;
 $cfg['Servers'][$i]['AllowNoPassword'] = false;
@@ -333,17 +307,157 @@ $cfg['Servers'][$i]['AllowNoPassword'] = false;
 
 	autologinPHP := `<?php
 if (isset($_GET['token'])) {
-    $token = preg_replace('/[^a-f0-9]/', '', $_GET['token']);
-    if ($token && file_exists('/var/www/phpmyadmin/token_' . $token)) {
-        setcookie('pma_autologin_token', $token, 0, '/');
-    }
+    $token = preg_replace('/[^a-zA-Z0-9-]/', '', $_GET['token']);
+    header('Location: signon.php?token=' . $token);
+    exit;
 }
-$db = isset($_GET['db']) ? urlencode($_GET['db']) : '';
-header('Location: index.php' . ($db ? '?db=' . $db : ''));
+header('Location: index.php');
 exit;
 `
 	if err := os.WriteFile("/var/www/phpmyadmin/autologin.php", []byte(autologinPHP), 0644); err != nil {
 		return nil, fmt.Errorf("failed to write phpmyadmin autologin script: %w", err)
+	}
+
+	signonPHP := `<?php
+session_name('SignonSession');
+session_start();
+
+if (isset($_GET['action']) && $_GET['action'] === 'logout') {
+    unset($_SESSION['PMA_single_signon_user']);
+    unset($_SESSION['PMA_single_signon_password']);
+    unset($_SESSION['PMA_single_signon_host']);
+    session_destroy();
+    header('Location: http://' . $_SERVER['HTTP_HOST'] . ':8888/');
+    exit;
+}
+
+$token = isset($_GET['token']) ? preg_replace('/[^a-zA-Z0-9-]/', '', $_GET['token']) : '';
+
+if (empty($token)) {
+    show_error_page("Token is missing or invalid.", "Please try logging in to phpMyAdmin again from the MegoPanel dashboard.");
+}
+
+$apiUrl = "http://127.0.0.1:8888/internal/phpmyadmin/token?token=" . urlencode($token);
+
+$ch = curl_init();
+curl_setopt($ch, CURLOPT_URL, $apiUrl);
+curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+curl_setopt($ch, CURLOPT_TIMEOUT, 5);
+$response = curl_exec($ch);
+$httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+curl_close($ch);
+
+if ($httpCode !== 200 || !$response) {
+    $ctx = stream_context_create([
+        'http' => [
+            'timeout' => 5,
+            'ignore_errors' => true
+        ]
+    ]);
+    $response = @file_get_contents($apiUrl, false, $ctx);
+    $httpCode = 0;
+    if (isset($http_response_header[0])) {
+        preg_match('{HTTP\/\S+\s+(\d+)}', $http_response_header[0], $matches);
+        if (isset($matches[1])) {
+            $httpCode = intval($matches[1]);
+        }
+    }
+}
+
+if ($httpCode !== 200 || !$response) {
+    show_error_page("Authentication failed.", "The autologin token is invalid, expired (expired after 15 seconds), or already used. Please go back to the MegoPanel dashboard and try again.");
+}
+
+$data = json_decode($response, true);
+if (!$data || !isset($data['username']) || !isset($data['password'])) {
+    show_error_page("Malformed API response.", "The authentication service returned an invalid response format.");
+}
+
+$_SESSION['PMA_single_signon_user'] = $data['username'];
+$_SESSION['PMA_single_signon_password'] = $data['password'];
+$_SESSION['PMA_single_signon_host'] = 'localhost';
+
+header('Location: index.php');
+exit;
+
+function show_error_page($title, $message) {
+    header("HTTP/1.1 403 Forbidden");
+    ?>
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>phpMyAdmin Autologin Error</title>
+        <style>
+            body {
+                background: #0f0f11;
+                color: #e4e4e7;
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                min-height: 100vh;
+                margin: 0;
+            }
+            .card {
+                background: #18181b;
+                border: 1px solid #27272a;
+                border-radius: 8px;
+                padding: 32px;
+                max-width: 480px;
+                width: 100%;
+                box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+                text-align: center;
+            }
+            .icon {
+                color: #ef4444;
+                font-size: 48px;
+                margin-bottom: 16px;
+            }
+            h1 {
+                font-size: 20px;
+                font-weight: 600;
+                margin: 0 0 12px 0;
+                color: #ffffff;
+            }
+            p {
+                font-size: 14px;
+                color: #a1a1aa;
+                line-height: 1.5;
+                margin: 0 0 24px 0;
+            }
+            .btn {
+                display: inline-block;
+                background: #ffffff;
+                color: #0f0f11;
+                font-weight: 600;
+                font-size: 13px;
+                text-decoration: none;
+                padding: 10px 20px;
+                border-radius: 6px;
+                transition: background 0.15s ease;
+            }
+            .btn:hover {
+                background: #e4e4e7;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="card">
+            <div class="icon">⚠️</div>
+            <h1><?php echo htmlspecialchars($title); ?></h1>
+            <p><?php echo htmlspecialchars($message); ?></p>
+            <a href="http://<?php echo htmlspecialchars($_SERVER['HTTP_HOST']); ?>:8888/" class="btn">Back to Dashboard</a>
+        </div>
+    </body>
+    </html>
+    <?php
+    exit;
+}
+`
+	if err := os.WriteFile("/var/www/phpmyadmin/signon.php", []byte(signonPHP), 0644); err != nil {
+		return nil, fmt.Errorf("failed to write phpmyadmin signon script: %w", err)
 	}
 	chownCmd := exec.Command("chown", "-R", "www-data:www-data", "/var/www/phpmyadmin")
 	if output, err := chownCmd.CombinedOutput(); err != nil {

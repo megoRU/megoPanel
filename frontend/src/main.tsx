@@ -1101,9 +1101,10 @@ function Dashboard(): React.JSX.Element {
                                           <button
                                             className="btn-secondary cursor-pointer py-1 px-3 text-[10px] uppercase font-bold tracking-wider"
                                             onClick={function openAutologin(): void {
-                                              api.post<{ token: string; db: string }>('/databases/autologin', { db }).then(function(res) {
-                                                const autologinUrl = window.location.protocol + '//' + window.location.hostname + ':8080/autologin.php?token=' + res.data.token + '&db=' + res.data.db;
-                                                window.open(autologinUrl, '_blank', 'noopener,noreferrer');
+                                              api.post<{ url: string }>('/phpmyadmin/autologin', { db }).then(function(res) {
+                                                const cleanPath = res.data.url.replace(/^\/phpmyadmin/, '');
+                                                const autologinUrl = window.location.protocol + '//' + window.location.hostname + ':8080' + cleanPath;
+                                                window.location.href = autologinUrl;
                                               }).catch(function(err) {
                                                 console.error('Autologin failed:', err);
                                               });
@@ -1148,12 +1149,13 @@ function Dashboard(): React.JSX.Element {
                     <button
                       className="btn cursor-pointer py-2 px-4"
                       onClick={function openPma() {
-                        api.post<{ token: string; db: string }>('/databases/autologin', { db: '' }).then(function(res) {
-                          const autologinUrl = window.location.protocol + '//' + window.location.hostname + ':8080/autologin.php?token=' + res.data.token;
-                          window.open(autologinUrl, '_blank', 'noopener,noreferrer');
+                        api.post<{ url: string }>('/phpmyadmin/autologin', { db: '' }).then(function(res) {
+                          const cleanPath = res.data.url.replace(/^\/phpmyadmin/, '');
+                          const autologinUrl = window.location.protocol + '//' + window.location.hostname + ':8080' + cleanPath;
+                          window.location.href = autologinUrl;
                         }).catch(function(err) {
                           console.error('Autologin failed:', err);
-                          window.open(window.location.protocol + '//' + window.location.hostname + ':8080', '_blank', 'noopener,noreferrer');
+                          window.location.href = window.location.protocol + '//' + window.location.hostname + ':8080';
                         });
                       }}
                     >

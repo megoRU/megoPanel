@@ -33,7 +33,8 @@ func New(cfg *config.Config, logger *slog.Logger) (*App, error) {
 	dashboard := service.NewDashboardService()
 	install := service.NewInstallService(services, pm, settings)
 	update := service.NewUpdateService()
-	router := api.NewRouter(api.RouterDeps{Config: cfg, Auth: auth, Dashboard: dashboard, Install: install, Update: update, DB: db})
+	autologin := service.NewAutologinStore()
+	router := api.NewRouter(api.RouterDeps{Config: cfg, Auth: auth, Dashboard: dashboard, Install: install, Update: update, DB: db, Autologin: autologin})
 	return &App{cfg: cfg, logger: logger, router: router}, nil
 }
 func (a *App) Run() error {
