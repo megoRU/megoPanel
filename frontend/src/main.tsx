@@ -244,7 +244,7 @@ function Layout(properties: { children: React.ReactNode; showHeaderControls?: bo
               MegoPanel
             </span>
             <span className="h-4 w-[1px] bg-[var(--border-color)] hidden sm:block"></span>
-            <span className="text-sm text-[var(--text-muted)] font-mono hidden sm:block">v1.0.0</span>
+            <span className="text-sm text-[var(--text-muted)] font-mono hidden sm:block">v1.1.0</span>
           </div>
 
           <div className="flex items-center gap-4">
@@ -1101,9 +1101,10 @@ function Dashboard(): React.JSX.Element {
                                           <button
                                             className="btn-secondary cursor-pointer py-1 px-3 text-[10px] uppercase font-bold tracking-wider"
                                             onClick={function openAutologin(): void {
-                                              api.post<{ token: string; db: string }>('/databases/autologin', { db }).then(function(res) {
-                                                const autologinUrl = window.location.protocol + '//' + window.location.hostname + ':8080/autologin.php?token=' + res.data.token + '&db=' + res.data.db;
-                                                window.open(autologinUrl, '_blank', 'noopener,noreferrer');
+                                              api.post<{ url: string }>('/phpmyadmin/autologin', { db }).then(function(res) {
+                                                const cleanPath = res.data.url.replace(/^\/phpmyadmin/, '');
+                                                const autologinUrl = window.location.protocol + '//' + window.location.hostname + ':8080' + cleanPath;
+                                                window.location.href = autologinUrl;
                                               }).catch(function(err) {
                                                 console.error('Autologin failed:', err);
                                               });
@@ -1148,12 +1149,13 @@ function Dashboard(): React.JSX.Element {
                     <button
                       className="btn cursor-pointer py-2 px-4"
                       onClick={function openPma() {
-                        api.post<{ token: string; db: string }>('/databases/autologin', { db: '' }).then(function(res) {
-                          const autologinUrl = window.location.protocol + '//' + window.location.hostname + ':8080/autologin.php?token=' + res.data.token;
-                          window.open(autologinUrl, '_blank', 'noopener,noreferrer');
+                        api.post<{ url: string }>('/phpmyadmin/autologin', { db: '' }).then(function(res) {
+                          const cleanPath = res.data.url.replace(/^\/phpmyadmin/, '');
+                          const autologinUrl = window.location.protocol + '//' + window.location.hostname + ':8080' + cleanPath;
+                          window.location.href = autologinUrl;
                         }).catch(function(err) {
                           console.error('Autologin failed:', err);
-                          window.open(window.location.protocol + '//' + window.location.hostname + ':8080', '_blank', 'noopener,noreferrer');
+                          window.location.href = window.location.protocol + '//' + window.location.hostname + ':8080';
                         });
                       }}
                     >
@@ -1214,7 +1216,7 @@ function Dashboard(): React.JSX.Element {
               <div className="space-y-2">
                 <p className="text-sm text-[var(--text-color)]">
                   <span className="font-semibold text-[var(--text-muted)] mr-2">{t('updateCurrent')}</span>
-                  <span className="font-mono text-zinc-400">v1.0.0</span>
+                  <span className="font-mono text-zinc-400">v1.1.0</span>
                 </p>
 
                 {/* State-driven display for latest update status */}

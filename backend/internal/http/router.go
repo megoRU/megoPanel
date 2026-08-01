@@ -1,14 +1,15 @@
 package http
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/gorilla/websocket"
 	"gorm.io/gorm"
+	"log"
 	"mego-panel/backend/internal/config"
 	"mego-panel/backend/internal/domain"
+	"mego-panel/backend/internal/platform"
 	"mego-panel/backend/internal/service"
 	"net"
 	"net/http"
@@ -26,6 +27,7 @@ type RouterDeps struct {
 	Install   *service.InstallService
 	Update    *service.UpdateService
 	DB        *gorm.DB
+	Autologin *service.AutologinStore
 }
 
 func NewRouter(d RouterDeps) *gin.Engine {
@@ -34,6 +36,40 @@ func NewRouter(d RouterDeps) *gin.Engine {
 	}
 	r := gin.New()
 	r.Use(gin.Logger(), gin.Recovery(), securityHeaders(), cors.New(cors.Config{AllowOrigins: []string{d.Config.Server.FrontendURL}, AllowCredentials: true, AllowHeaders: []string{"Content-Type", "X-CSRF-Token"}, AllowMethods: []string{"GET", "POST", "DELETE", "OPTIONS"}}))
+
+	r.GET("/internal/phpmyadmin/token", func(c *gin.Context) {
+		clientIP := c.ClientIP()
+		parsedIP := net.ParseIP(clientIP)
+		isLocal := clientIP == "127.0.0.1" || clientIP == "::1" || (parsedIP != nil && parsedIP.IsLoopback())
+
+		if !isLocal {
+			logAuthAttempt(false, clientIP, "", "unauthorized access from non-localhost IP")
+			c.JSON(http.StatusForbidden, gin.H{"error": "Forbidden: access allowed only from localhost"})
+			return
+		}
+
+		token := c.Query("token")
+		if token == "" {
+			logAuthAttempt(false, clientIP, "", "missing token parameter")
+			c.JSON(http.StatusBadRequest, gin.H{"error": "missing token parameter"})
+			return
+		}
+
+		pmaToken, err := d.Autologin.RetrieveAndConsume(token)
+		if err != nil {
+			logAuthAttempt(false, clientIP, token, "failed to consume token: "+err.Error())
+			c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+			return
+		}
+
+		logAuthAttempt(true, clientIP, token, "successfully authenticated mysql user: "+pmaToken.MySQLUsername)
+
+		c.JSON(http.StatusOK, gin.H{
+			"username": pmaToken.MySQLUsername,
+			"password": pmaToken.MySQLPassword,
+		})
+	})
+
 	api := r.Group("/api/v1")
 	api.GET("/setup/status", func(c *gin.Context) { ok, err := d.Auth.IsConfigured(); respond(c, ok, gin.H{"configured": ok}, err) })
 	api.POST("/setup/admin", func(c *gin.Context) {
@@ -290,6 +326,9 @@ func NewRouter(d RouterDeps) *gin.Engine {
 			return
 		}
 
+		// Extract user ID from JWT
+		userID := extractUserID(c, d.Config.Security.JWTSecret)
+
 		// Get root password
 		var passwordSetting domain.Setting
 		var rootPassword string
@@ -307,94 +346,83 @@ func NewRouter(d RouterDeps) *gin.Engine {
 			}
 		}
 
-		// Cleanup old tokens
-		if files, err := os.ReadDir("/var/www/phpmyadmin"); err == nil {
-			for _, f := range files {
-				if strings.HasPrefix(f.Name(), "token_") {
-					info, err := f.Info()
-					if err == nil && time.Since(info.ModTime()) > 60*time.Second {
-						_ = os.Remove("/var/www/phpmyadmin/" + f.Name())
-					}
-				}
+		// Generate UUIDv7
+		token, err := platform.NewUUIDv7()
+		if err != nil {
+			c.JSON(500, gin.H{"error": "failed to generate token: " + err.Error()})
+			return
+		}
+
+		now := time.Now()
+		expiresAt := now.Add(15 * time.Second)
+
+		d.Autologin.Save(token, &service.PMAAutologinToken{
+			UserID:        userID,
+			MySQLUsername: dbUser,
+			MySQLPassword: dbPassword,
+			CreatedAt:     now,
+			ExpiresAt:     expiresAt,
+		})
+
+		c.JSON(200, gin.H{"token": token, "db": req.DB})
+	})
+
+	protected.POST("/phpmyadmin/autologin", func(c *gin.Context) {
+		var req struct {
+			DB string `json:"db"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(400, gin.H{"error": err.Error()})
+			return
+		}
+
+		// Verify phpmyadmin directory exists
+		if _, err := os.Stat("/var/www/phpmyadmin"); os.IsNotExist(err) {
+			c.JSON(400, gin.H{"error": "phpMyAdmin is not installed"})
+			return
+		}
+
+		// Extract user ID from JWT
+		userID := extractUserID(c, d.Config.Security.JWTSecret)
+
+		// Get root password
+		var passwordSetting domain.Setting
+		var rootPassword string
+		if err := d.DB.First(&passwordSetting, "key = ?", "mariadb_root_password").Error; err == nil {
+			rootPassword = passwordSetting.Value
+		}
+
+		dbUser := "root"
+		dbPassword := rootPassword
+		if req.DB != "" {
+			var dbPasswordSetting domain.Setting
+			if err := d.DB.First(&dbPasswordSetting, "key = ?", "db_password_"+req.DB).Error; err == nil {
+				dbUser = req.DB
+				dbPassword = dbPasswordSetting.Value
 			}
 		}
 
-		// Generate random token
-		tokenBytes := make([]byte, 16)
-		if _, err := rand.Read(tokenBytes); err != nil {
-			c.JSON(500, gin.H{"error": "failed to generate token"})
+		// Generate UUIDv7
+		token, err := platform.NewUUIDv7()
+		if err != nil {
+			c.JSON(500, gin.H{"error": "failed to generate token: " + err.Error()})
 			return
 		}
-		token := hex.EncodeToString(tokenBytes)
 
-		// Create token file
-		tokenPath := "/var/www/phpmyadmin/token_" + token
-		tokenContent := dbUser + ":" + dbPassword
-		_ = os.WriteFile(tokenPath, []byte(tokenContent), 0644)
-		_ = os.Chown(tokenPath, 33, 33)
+		now := time.Now()
+		expiresAt := now.Add(15 * time.Second)
 
-		// Rewrite config.inc.php and autologin.php to ensure they are up to date!
-		blowfishBytes := make([]byte, 16)
-		_, _ = rand.Read(blowfishBytes)
-		blowfishSecret := hex.EncodeToString(blowfishBytes)
+		d.Autologin.Save(token, &service.PMAAutologinToken{
+			UserID:        userID,
+			MySQLUsername: dbUser,
+			MySQLPassword: dbPassword,
+			CreatedAt:     now,
+			ExpiresAt:     expiresAt,
+		})
 
-		pmaConfig := `<?php
-$cfg['blowfish_secret'] = '` + blowfishSecret + `';
-$i = 0;
-$i++;
-
-$autologin = false;
-$user = 'root';
-$password = '';
-
-if (isset($_COOKIE['pma_autologin_token'])) {
-    $token = preg_replace('/[^a-f0-9]/', '', $_COOKIE['pma_autologin_token']);
-    $token_file = '/var/www/phpmyadmin/token_' . $token;
-    if ($token && file_exists($token_file)) {
-        $mtime = filemtime($token_file);
-        if (time() - $mtime < 30) {
-            $content = file_get_contents($token_file);
-            $parts = explode(':', $content, 2);
-            if (count($parts) === 2) {
-                $user = $parts[0];
-                $password = $parts[1];
-                $autologin = true;
-            }
-        }
-        @unlink($token_file);
-    }
-    setcookie('pma_autologin_token', '', time() - 3600, '/');
-}
-
-if ($autologin) {
-    $cfg['Servers'][$i]['auth_type'] = 'config';
-    $cfg['Servers'][$i]['user'] = $user;
-    $cfg['Servers'][$i]['password'] = $password;
-} else {
-    $cfg['Servers'][$i]['auth_type'] = 'cookie';
-}
-$cfg['Servers'][$i]['host'] = 'localhost';
-$cfg['Servers'][$i]['compress'] = false;
-$cfg['Servers'][$i]['AllowNoPassword'] = false;
-`
-		_ = os.WriteFile("/var/www/phpmyadmin/config.inc.php", []byte(pmaConfig), 0644)
-		_ = os.Chown("/var/www/phpmyadmin/config.inc.php", 33, 33)
-
-		autologinPHP := `<?php
-if (isset($_GET['token'])) {
-    $token = preg_replace('/[^a-f0-9]/', '', $_GET['token']);
-    if ($token && file_exists('/var/www/phpmyadmin/token_' . $token)) {
-        setcookie('pma_autologin_token', $token, 0, '/');
-    }
-}
-$db = isset($_GET['db']) ? urlencode($_GET['db']) : '';
-header('Location: index.php' . ($db ? '?db=' . $db : ''));
-exit;
-`
-		_ = os.WriteFile("/var/www/phpmyadmin/autologin.php", []byte(autologinPHP), 0644)
-		_ = os.Chown("/var/www/phpmyadmin/autologin.php", 33, 33)
-
-		c.JSON(200, gin.H{"token": token, "db": req.DB})
+		c.JSON(200, gin.H{
+			"url": "/phpmyadmin/signon.php?token=" + token,
+		})
 	})
 
 	protected.GET("/update/status", func(c *gin.Context) {
@@ -488,4 +516,29 @@ func respond(c *gin.Context, _ bool, data interface{}, err error) {
 		return
 	}
 	c.JSON(200, data)
+}
+func extractUserID(c *gin.Context, jwtSecret string) string {
+	tokenStr, err := c.Cookie("access_token")
+	if err != nil {
+		return "unknown"
+	}
+	token, err := jwt.Parse(tokenStr, func(t *jwt.Token) (interface{}, error) {
+		return []byte(jwtSecret), nil
+	})
+	if err != nil || !token.Valid {
+		return "unknown"
+	}
+	if claims, ok := token.Claims.(jwt.MapClaims); ok {
+		if sub, ok := claims["sub"].(string); ok {
+			return sub
+		}
+	}
+	return "unknown"
+}
+func logAuthAttempt(success bool, ip, token, details string) {
+	if success {
+		log.Printf("[PMA-SIGNON-SUCCESS] IP: %s, Token: %s, Details: %s", ip, token, details)
+	} else {
+		log.Printf("[PMA-SIGNON-FAILED] IP: %s, Token: %s, Details: %s", ip, token, details)
+	}
 }
