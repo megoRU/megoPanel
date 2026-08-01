@@ -20,6 +20,12 @@ type DashboardStats = {
   hostname: string;
 };
 
+type UpdateStatusResponse = {
+  currentVersion: string;
+  latestVersion: string;
+  hasUpdate: boolean;
+};
+
 type CardData = {
   label: string;
   value: string;
@@ -39,6 +45,98 @@ const queryClient = new QueryClient();
 if (typeof window !== 'undefined') {
   const savedTheme = localStorage.getItem('megopanel-theme') || 'dark';
   document.documentElement.setAttribute('data-theme', savedTheme);
+}
+
+function UpdateComponent(): React.JSX.Element {
+  const { t } = useTranslation();
+  const [isChecking, setIsChecking] = React.useState(false);
+  const [updateStatus, setUpdateStatus] = React.useState<UpdateStatusResponse | null>(null);
+  const [installError, setInstallError] = React.useState<string | null>(null);
+
+  const upgradeMutation = useMutation({
+    mutationFn: function upgradeApplication() {
+      return api.post('/update/upgrade');
+    },
+    onSuccess: function handleUpgradeSuccess() {
+      // Re-trigger checking or set state
+      setInstallError(null);
+    },
+    onError: function handleUpgradeError(err: any) {
+      const errMsg = err?.response?.data?.error || t('updateFailed');
+      setInstallError(errMsg);
+    }
+  });
+
+  function checkUpdates() {
+    setIsChecking(true);
+    setInstallError(null);
+    api.get<UpdateStatusResponse>('/update/status')
+      .then(res => {
+        setUpdateStatus(res.data);
+      })
+      .catch(err => {
+        console.error('Check update failed:', err);
+      })
+      .finally(() => {
+        setIsChecking(false);
+      });
+  }
+
+  return (
+    <div className="space-y-4 pt-2">
+      {updateStatus && (
+        <div className="space-y-2">
+          <p className="text-sm text-[var(--text-color)]">
+            <span className="font-semibold text-[var(--text-muted)] mr-2">{t('updateLatestVersion')}</span>
+            <span className="font-mono text-zinc-400">{updateStatus.latestVersion}</span>
+          </p>
+          {updateStatus.hasUpdate ? (
+            <div className="p-3 bg-amber-500/10 text-amber-400 border border-amber-500/20 rounded-md text-xs">
+              {t('updateNewAvailable')} <span className="font-bold">{updateStatus.latestVersion}</span>
+            </div>
+          ) : (
+            <div className="p-3 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded-md text-xs">
+              {t('updateLatest')}
+            </div>
+          )}
+        </div>
+      )}
+
+      {installError && (
+        <div className="p-3 bg-rose-500/10 text-rose-400 border border-rose-500/20 rounded-md text-xs">
+          {installError}
+        </div>
+      )}
+
+      {upgradeMutation.isSuccess && (
+        <div className="p-3 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded-md text-xs">
+          {t('updateInstalling')}
+        </div>
+      )}
+
+      <div className="flex gap-3 pt-2">
+        <button
+          className="btn-secondary text-sm px-4 py-2 cursor-pointer"
+          onClick={checkUpdates}
+          disabled={isChecking || upgradeMutation.isPending}
+          type="button"
+        >
+          {isChecking ? t('updateChecking') : t('updateCheck')}
+        </button>
+
+        {updateStatus?.hasUpdate && !upgradeMutation.isSuccess && (
+          <button
+            className="btn text-sm px-4 py-2 cursor-pointer"
+            onClick={() => upgradeMutation.mutate()}
+            disabled={upgradeMutation.isPending}
+            type="button"
+          >
+            {upgradeMutation.isPending ? t('updateInstalling') : t('updateInstall')}
+          </button>
+        )}
+      </div>
+    </div>
+  );
 }
 
 // Uptime Formatter Utility
@@ -1079,6 +1177,22 @@ function Dashboard(): React.JSX.Element {
                 <p className="text-sm text-[var(--text-muted)]">{t('switchTheme')}</p>
               </div>
               <ThemeSwitch />
+            </div>
+          </section>
+
+          {/* Update Section */}
+          <section className="card p-6 space-y-6 flex flex-col justify-between">
+            <div className="space-y-4">
+              <h3 className="text-base font-semibold text-[var(--heading-color)] border-b border-[var(--border-color)] pb-3">{t('updateCheck')}</h3>
+              <div className="space-y-2">
+                <p className="text-sm text-[var(--text-color)]">
+                  <span className="font-semibold text-[var(--text-muted)] mr-2">{t('updateCurrent')}</span>
+                  <span className="font-mono text-zinc-400">v1.0.0</span>
+                </p>
+
+                {/* State-driven display for latest update status */}
+                <UpdateComponent />
+              </div>
             </div>
           </section>
         </div>
