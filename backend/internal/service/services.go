@@ -190,6 +190,7 @@ func readFirst(path string, prefix string) string {
 	}
 	return runtime.GOOS
 }
+
 var StartTime = time.Now()
 
 func readUptime() string {
