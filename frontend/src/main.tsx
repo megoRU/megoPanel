@@ -375,15 +375,17 @@ function Onboarding(): React.JSX.Element {
               {/* MariaDB Card */}
               <div className="space-y-4 rounded-lg border border-[var(--border-color)] p-4 bg-[var(--bg-color)]/20 flex flex-col justify-between">
                 <div className="space-y-3">
-                  <div className="flex justify-between items-start gap-1">
-                    <h3 className="text-sm font-semibold text-[var(--heading-color)]">MariaDB</h3>
-                    <span className={`text-[9px] uppercase font-bold px-1.5 py-0.5 rounded whitespace-nowrap ${
-                      installMariaDbMutation.isSuccess
-                        ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
-                        : 'bg-zinc-500/10 text-zinc-400 border border-zinc-500/20'
-                    }`}>
-                      {installMariaDbMutation.isSuccess ? t('installed') : t('notInstalled')}
-                    </span>
+                  <div className="flex flex-col gap-2">
+                    <h3 className="text-base font-semibold text-[var(--heading-color)]">MariaDB</h3>
+                    <div>
+                      <span className={`text-[10px] uppercase font-bold px-2 py-0.5 rounded ${
+                        installMariaDbMutation.isSuccess
+                          ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                          : 'bg-zinc-500/10 text-zinc-400 border border-zinc-500/20'
+                      }`}>
+                        {installMariaDbMutation.isSuccess ? t('installed') : t('notInstalled')}
+                      </span>
+                    </div>
                   </div>
 
                   <label className="flex items-center gap-2 text-xs text-[var(--text-color)] cursor-pointer select-none">
@@ -429,15 +431,17 @@ function Onboarding(): React.JSX.Element {
               {/* Nginx Card */}
               <div className="space-y-4 rounded-lg border border-[var(--border-color)] p-4 bg-[var(--bg-color)]/20 flex flex-col justify-between">
                 <div className="space-y-3">
-                  <div className="flex justify-between items-start gap-1">
-                    <h3 className="text-sm font-semibold text-[var(--heading-color)]">Nginx</h3>
-                    <span className={`text-[9px] uppercase font-bold px-1.5 py-0.5 rounded whitespace-nowrap ${
-                      installNginxMutation.isSuccess
-                        ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
-                        : 'bg-zinc-500/10 text-zinc-400 border border-zinc-500/20'
-                    }`}>
-                      {installNginxMutation.isSuccess ? t('installed') : t('notInstalled')}
-                    </span>
+                  <div className="flex flex-col gap-2">
+                    <h3 className="text-base font-semibold text-[var(--heading-color)]">Nginx</h3>
+                    <div>
+                      <span className={`text-[10px] uppercase font-bold px-2 py-0.5 rounded ${
+                        installNginxMutation.isSuccess
+                          ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                          : 'bg-zinc-500/10 text-zinc-400 border border-zinc-500/20'
+                      }`}>
+                        {installNginxMutation.isSuccess ? t('installed') : t('notInstalled')}
+                      </span>
+                    </div>
                   </div>
 
                   <p className="text-xs text-[var(--text-muted)]">{t('nginxDescription')}</p>
@@ -465,18 +469,20 @@ function Onboarding(): React.JSX.Element {
                 </div>
               </div>
 
-              {/* phpMyAdmin Card (NEW) */}
+              {/* phpMyAdmin Card */}
               <div className="space-y-4 rounded-lg border border-[var(--border-color)] p-4 bg-[var(--bg-color)]/20 flex flex-col justify-between">
                 <div className="space-y-3">
-                  <div className="flex justify-between items-start gap-1">
-                    <h3 className="text-sm font-semibold text-[var(--heading-color)]">phpMyAdmin</h3>
-                    <span className={`text-[9px] uppercase font-bold px-1.5 py-0.5 rounded whitespace-nowrap ${
-                      installPhpmyadminMutation.isSuccess
-                        ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
-                        : 'bg-zinc-500/10 text-zinc-400 border border-zinc-500/20'
-                    }`}>
-                      {installPhpmyadminMutation.isSuccess ? t('installed') : t('notInstalled')}
-                    </span>
+                  <div className="flex flex-col gap-2">
+                    <h3 className="text-base font-semibold text-[var(--heading-color)]">phpMyAdmin</h3>
+                    <div>
+                      <span className={`text-[10px] uppercase font-bold px-2 py-0.5 rounded ${
+                        installPhpmyadminMutation.isSuccess
+                          ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                          : 'bg-zinc-500/10 text-zinc-400 border border-zinc-500/20'
+                      }`}>
+                        {installPhpmyadminMutation.isSuccess ? t('installed') : t('notInstalled')}
+                      </span>
+                    </div>
                   </div>
 
                   <p className="text-xs text-[var(--text-muted)]">{t('phpmyadminDescription')}</p>
@@ -686,7 +692,6 @@ function Dashboard(): React.JSX.Element {
           </div>
           <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-sm text-[var(--text-muted)] font-mono">
             <div><span className="text-[var(--text-color)] font-medium">OS:</span> {statsQuery.data.osVersion}</div>
-            <div><span className="text-[var(--text-color)] font-medium">Hostname:</span> {statsQuery.data.hostname}</div>
           </div>
         </div>
       )}
@@ -882,7 +887,7 @@ function Dashboard(): React.JSX.Element {
                         type="password"
                         value={dbPasswordInput}
                         onChange={function handleDbPasswordInputChange(event: React.ChangeEvent<HTMLInputElement>): void { setDbPasswordInput(event.target.value); }}
-                        placeholder="Database password"
+                        placeholder={t('password')}
                       />
                     </div>
                     <div>
