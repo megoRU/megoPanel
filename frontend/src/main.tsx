@@ -51,14 +51,16 @@ function LanguageSwitch(): React.JSX.Element {
   }
 
   return (
-    <select
-      className="input max-w-[120px] bg-[var(--input-bg)] text-[var(--input-text)] border border-[var(--input-border)] rounded-xl py-2 px-3 cursor-pointer"
-      value={i18n.language.startsWith('ru') ? 'ru' : 'en'}
-      onChange={handleLanguageChange}
-    >
-      <option value="en">EN</option>
-      <option value="ru">RU</option>
-    </select>
+    <div className="relative inline-block">
+      <select
+        className="input max-w-[80px] bg-[var(--input-bg)] text-[var(--input-text)] border border-[var(--input-border)] rounded-md py-1.5 px-3 cursor-pointer text-xs uppercase"
+        value={i18n.language.startsWith('ru') ? 'ru' : 'en'}
+        onChange={handleLanguageChange}
+      >
+        <option value="en">EN</option>
+        <option value="ru">RU</option>
+      </select>
+    </div>
   );
 }
 
@@ -79,32 +81,79 @@ function ThemeSwitch(): React.JSX.Element {
   }
 
   return (
-    <button className="btn" onClick={toggleTheme} type="button">
+    <button className="btn-secondary text-xs px-3 py-1.5" onClick={toggleTheme} type="button">
       {theme === 'dark' ? t('dark').toUpperCase() : t('light').toUpperCase()}
     </button>
   );
 }
 
-function Layout(properties: { children: React.ReactNode }): React.JSX.Element {
+function Layout(properties: { children: React.ReactNode; showHeaderControls?: boolean }): React.JSX.Element {
   const { t } = useTranslation();
+  const navigate = useNavigate();
+
+  const handleLogout = () => {
+    api.post('/auth/logout').then(() => {
+      navigate('/login');
+    }).catch(err => {
+      console.error('Logout failed:', err);
+      navigate('/login');
+    });
+  };
+
   return (
-    <main className="min-h-screen p-4 md:p-8">
-      <div className="mx-auto max-w-6xl">
-        <header className="mb-8 flex items-center justify-between border-b border-[var(--border-color)] pb-6">
-          <div>
-            <p className="text-xs font-bold uppercase tracking-widest text-purple-500">MegoPanel</p>
-            <h1 className="text-3xl font-extrabold bg-clip-text text-transparent bg-gradient-to-r from-[var(--title-gradient-from)] to-[var(--title-gradient-to)]">{t('serverManagement')}</h1>
+    <div className="min-h-screen bg-[var(--bg-gradient)] transition-colors duration-200">
+      <header className="border-b border-[var(--border-color)] bg-[var(--card-bg)]/80 backdrop-blur-md sticky top-0 z-50">
+        <div className="mx-auto max-w-5xl px-4 md:px-8 py-4 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <span className="text-sm font-semibold tracking-tight uppercase px-2 py-0.5 bg-zinc-900 text-white border border-zinc-800 rounded">
+              MegoPanel
+            </span>
+            <span className="h-4 w-[1px] bg-[var(--border-color)] hidden sm:block"></span>
+            <span className="text-xs text-[var(--text-muted)] font-mono hidden sm:block">v1.0.0</span>
           </div>
-        </header>
+
+          <div className="flex items-center gap-4">
+            <LanguageSwitch />
+            <ThemeSwitch />
+            {properties.showHeaderControls && (
+              <button onClick={handleLogout} className="btn-secondary text-xs px-3 py-1.5 hover:text-rose-500 hover:border-rose-500/30">
+                {t('logout')}
+              </button>
+            )}
+          </div>
+        </div>
+      </header>
+
+      <main className="mx-auto max-w-5xl px-4 md:px-8 py-8 md:py-12 animate-fadeIn">
         {properties.children}
-      </div>
-    </main>
+      </main>
+    </div>
   );
 }
 
 function Login(): React.JSX.Element {
   const { t } = useTranslation();
   const navigate = useNavigate();
+
+  // ROUTE PROTECTION: Redirect to '/' if already authenticated or redirect to '/onboarding' if not configured
+  const setupQuery = useQuery({
+    queryKey: ['setup'],
+    queryFn: async function loadSetupStatus(): Promise<{ configured: boolean }> {
+      const response = await api.get<{ configured: boolean }>('/setup/status');
+      return response.data;
+    },
+  });
+
+  const currentUserQuery = useQuery({
+    queryKey: ['me'],
+    queryFn: async function loadCurrentUser() {
+      const response = await api.get('/auth/me');
+      return response.data;
+    },
+    retry: false,
+    enabled: setupQuery.data?.configured === true,
+  });
+
   const mutation = useMutation({
     mutationFn: function login(formData: FormData) {
       const username = formData.get('username');
@@ -120,22 +169,46 @@ function Login(): React.JSX.Element {
     mutation.mutate(formData);
   }
 
+  if (setupQuery.isLoading) {
+    return <Layout><p className="text-sm text-[var(--text-muted)]">Loading...</p></Layout>;
+  }
+
+  if (setupQuery.data?.configured === false) {
+    return <Navigate to="/onboarding" />;
+  }
+
+  if (currentUserQuery.isSuccess) {
+    return <Navigate to="/" />;
+  }
+
   return (
     <Layout>
-      <form action={submitLogin} className="card mx-auto max-w-md space-y-6 p-8 bg-gradient-to-br from-purple-900/10 via-zinc-900/40 to-indigo-900/10">
-        <div>
-          <h2 className="text-2xl font-black bg-clip-text text-transparent bg-gradient-to-r from-[var(--title-gradient-from)] to-[var(--title-gradient-to)]">{t('login')}</h2>
-          <p className="text-xs text-[var(--text-muted)] mt-1">Access your high-performance node</p>
-        </div>
-        <div className="space-y-4">
-          <input className="input" name="username" placeholder={t('username')} required />
-          <input className="input" name="password" placeholder={t('password')} type="password" required />
-        </div>
-        <button className="btn w-full" type="submit" disabled={mutation.isPending}>
-          {mutation.isPending ? '...' : t('login')}
-        </button>
-        {mutation.error ? <p className="text-xs font-semibold text-rose-400 text-center">Login failed. Please verify your credentials.</p> : null}
-      </form>
+      <div className="flex flex-col items-center justify-center min-h-[60vh]">
+        <form action={submitLogin} className="card w-full max-w-md p-8 space-y-6">
+          <div className="text-center">
+            <h2 className="text-2xl font-bold tracking-tight text-[var(--heading-color)]">{t('login')}</h2>
+            <p className="text-xs text-[var(--text-muted)] mt-1">Access your high-performance node</p>
+          </div>
+          <div className="space-y-4">
+            <div>
+              <label className="block text-xs font-medium text-[var(--text-muted)] mb-1 uppercase tracking-wider">{t('username')}</label>
+              <input className="input" name="username" placeholder="admin" required />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-[var(--text-muted)] mb-1 uppercase tracking-wider">{t('password')}</label>
+              <input className="input" name="password" placeholder="••••••••" type="password" required />
+            </div>
+          </div>
+          <button className="btn w-full py-2.5" type="submit" disabled={mutation.isPending}>
+            {mutation.isPending ? '...' : t('login')}
+          </button>
+          {mutation.error ? (
+            <p className="text-xs font-medium text-rose-500 text-center">
+              Login failed. Please verify your credentials.
+            </p>
+          ) : null}
+        </form>
+      </div>
     </Layout>
   );
 }
@@ -145,6 +218,15 @@ function Onboarding(): React.JSX.Element {
   const [step, setStep] = React.useState(1);
   const [remoteAccessEnabled, setRemoteAccessEnabled] = React.useState(false);
   const [dbRootPassword, setDbRootPassword] = React.useState('');
+
+  // ROUTE PROTECTION: Redirect to '/' if already configured
+  const setupQuery = useQuery({
+    queryKey: ['setup'],
+    queryFn: async function loadSetupStatus(): Promise<{ configured: boolean }> {
+      const response = await api.get<{ configured: boolean }>('/setup/status');
+      return response.data;
+    },
+  });
 
   const adminMutation = useMutation({
     mutationFn: function createAdministrator(formData: FormData) {
@@ -176,6 +258,15 @@ function Onboarding(): React.JSX.Element {
   });
 
   function submitAdministrator(formData: FormData): void {
+    const password = formData.get('password');
+    const confirm = formData.get('confirm');
+
+    // PASSWORD CONFIRMATION SECURITY CHECK (Vulnerability fix)
+    if (password !== confirm) {
+      alert(t('confirm') + ' error: passwords do not match!');
+      return;
+    }
+
     adminMutation.mutate(formData);
   }
 
@@ -191,93 +282,134 @@ function Onboarding(): React.JSX.Element {
     installNginxMutation.mutate();
   }
 
+  if (setupQuery.isLoading) {
+    return <Layout><p className="text-sm text-[var(--text-muted)]">Loading...</p></Layout>;
+  }
+
+  if (setupQuery.data?.configured === true) {
+    return <Navigate to="/" />;
+  }
+
   return (
     <Layout>
-      <section className="card mx-auto max-w-2xl p-8 bg-gradient-to-br from-purple-900/10 via-zinc-900/40 to-indigo-900/10">
-        <h2 className="mb-6 text-2xl font-extrabold bg-clip-text text-transparent bg-gradient-to-r from-[var(--title-gradient-from)] to-[var(--title-gradient-to)]">{t('onboarding')}</h2>
+      <section className="card mx-auto max-w-xl p-8 space-y-6">
+        <div className="text-center border-b border-[var(--border-color)] pb-4">
+          <h2 className="text-2xl font-bold tracking-tight text-[var(--heading-color)]">{t('onboarding')}</h2>
+          <p className="text-xs text-[var(--text-muted)] mt-1">Setup MegoPanel on your environment</p>
+        </div>
 
         {step === 1 ? (
           <form action={submitAdministrator} className="space-y-4">
-            <h3 className="text-lg font-bold text-[var(--heading-color)]">{t('createAdmin')}</h3>
-            <input className="input" name="username" placeholder={t('username')} required />
-            <input className="input" name="password" placeholder={t('password')} type="password" required />
-            <input className="input" name="confirm" placeholder={t('confirm')} type="password" required />
-            <button className="btn" type="submit" disabled={adminMutation.isPending}>
+            <h3 className="text-sm font-semibold uppercase tracking-wider text-[var(--text-muted)]">{t('createAdmin')}</h3>
+            <div>
+              <label className="block text-xs font-medium text-[var(--text-muted)] mb-1 uppercase tracking-wider">{t('username')}</label>
+              <input className="input" name="username" placeholder="admin" required />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-[var(--text-muted)] mb-1 uppercase tracking-wider">{t('password')}</label>
+              <input className="input" name="password" placeholder="••••••••" type="password" required />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-[var(--text-muted)] mb-1 uppercase tracking-wider">{t('confirm')}</label>
+              <input className="input" name="confirm" placeholder="••••••••" type="password" required />
+            </div>
+            <button className="btn w-full py-2.5 mt-2" type="submit" disabled={adminMutation.isPending}>
               {adminMutation.isPending ? '...' : t('next')}
             </button>
-            {adminMutation.error ? <p className="text-xs font-semibold text-rose-400">Creation failed</p> : null}
+            {adminMutation.error ? <p className="text-xs font-semibold text-rose-500">Creation failed</p> : null}
           </form>
         ) : null}
 
         {step === 2 ? (
-          <div className="grid gap-6 md:grid-cols-2">
-            {/* MariaDB Card */}
-            <div className="space-y-4 rounded-2xl border border-[var(--border-color)] bg-black/10 p-5">
-              <h3 className="text-xl font-bold text-[var(--heading-color)]">MariaDB</h3>
-              <p className="text-sm text-[var(--text-color)]">Status: <span className="font-semibold text-purple-400">{installMariaDbMutation.isSuccess ? t('installed') : t('notInstalled')}</span></p>
-              <label className="flex items-center gap-3 text-sm text-[var(--text-color)] cursor-pointer select-none">
-                <input className="accent-purple-600 rounded" checked={remoteAccessEnabled} onChange={changeRemoteAccess} type="checkbox" />
-                {t('remote')}
-              </label>
-              {!installMariaDbMutation.isSuccess && (
-                <div className="space-y-1">
-                  <label className="block text-xs font-semibold text-[var(--text-muted)] uppercase tracking-wider">{t('dbRootPasswordLabel')}</label>
-                  <input
-                    className="input"
-                    type="password"
-                    placeholder={t('dbRootPasswordPlaceholder')}
-                    value={dbRootPassword}
-                    onChange={function handleDbRootPasswordChange(e: React.ChangeEvent<HTMLInputElement>) { setDbRootPassword(e.target.value); }}
-                  />
+          <div className="space-y-6">
+            <div className="grid gap-6 sm:grid-cols-2">
+              {/* MariaDB Card */}
+              <div className="space-y-4 rounded-lg border border-[var(--border-color)] p-5 bg-[var(--bg-color)]/20">
+                <div className="flex justify-between items-start">
+                  <h3 className="text-base font-semibold text-[var(--heading-color)]">MariaDB</h3>
+                  <span className={`text-[10px] uppercase font-bold px-2 py-0.5 rounded ${
+                    installMariaDbMutation.isSuccess
+                      ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                      : 'bg-zinc-500/10 text-zinc-400 border border-zinc-500/20'
+                  }`}>
+                    {installMariaDbMutation.isSuccess ? t('installed') : t('notInstalled')}
+                  </span>
                 </div>
-              )}
-              {!installMariaDbMutation.isSuccess && (
-                <button
-                  className="btn flex items-center justify-center gap-2 cursor-pointer w-full"
-                  onClick={installMariaDb}
-                  type="button"
-                  disabled={installMariaDbMutation.isPending}
-                >
-                  {installMariaDbMutation.isPending ? (
-                    <>
-                      <svg className="animate-spin h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                      </svg>
-                      {t('installing')}
-                    </>
-                  ) : t('install')}
-                </button>
-              )}
-              {installMariaDbMutation.error ? <p className="text-xs font-semibold text-rose-400">Installation failed</p> : null}
+
+                <label className="flex items-center gap-3 text-xs text-[var(--text-color)] cursor-pointer select-none">
+                  <input className="accent-white border-zinc-800 rounded" checked={remoteAccessEnabled} onChange={changeRemoteAccess} type="checkbox" />
+                  {t('remote')}
+                </label>
+                {!installMariaDbMutation.isSuccess && (
+                  <div className="space-y-1">
+                    <label className="block text-[10px] font-semibold text-[var(--text-muted)] uppercase tracking-wider">{t('dbRootPasswordLabel')}</label>
+                    <input
+                      className="input py-1 px-2 text-xs"
+                      type="password"
+                      placeholder={t('dbRootPasswordPlaceholder')}
+                      value={dbRootPassword}
+                      onChange={function handleDbRootPasswordChange(e: React.ChangeEvent<HTMLInputElement>) { setDbRootPassword(e.target.value); }}
+                    />
+                  </div>
+                )}
+                {!installMariaDbMutation.isSuccess && (
+                  <button
+                    className="btn flex items-center justify-center gap-2 cursor-pointer w-full text-xs py-1.5"
+                    onClick={installMariaDb}
+                    type="button"
+                    disabled={installMariaDbMutation.isPending}
+                  >
+                    {installMariaDbMutation.isPending ? (
+                      <>
+                        <svg className="animate-spin h-3.5 w-3.5 text-black dark:text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                        </svg>
+                        {t('installing')}
+                      </>
+                    ) : t('install')}
+                  </button>
+                )}
+                {installMariaDbMutation.error ? <p className="text-xs font-semibold text-rose-500">Installation failed</p> : null}
+              </div>
+
+              {/* Nginx Card */}
+              <div className="space-y-4 rounded-lg border border-[var(--border-color)] p-5 bg-[var(--bg-color)]/20">
+                <div className="flex justify-between items-start">
+                  <h3 className="text-base font-semibold text-[var(--heading-color)]">Nginx</h3>
+                  <span className={`text-[10px] uppercase font-bold px-2 py-0.5 rounded ${
+                    installNginxMutation.isSuccess
+                      ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                      : 'bg-zinc-500/10 text-zinc-400 border border-zinc-500/20'
+                  }`}>
+                    {installNginxMutation.isSuccess ? t('installed') : t('notInstalled')}
+                  </span>
+                </div>
+
+                <p className="text-xs text-[var(--text-muted)]">Nginx acts as a reverse proxy for your applications.</p>
+                {!installNginxMutation.isSuccess && (
+                  <button
+                    className="btn flex items-center justify-center gap-2 cursor-pointer w-full text-xs py-1.5"
+                    onClick={installNginx}
+                    type="button"
+                    disabled={installNginxMutation.isPending}
+                  >
+                    {installNginxMutation.isPending ? (
+                      <>
+                        <svg className="animate-spin h-3.5 w-3.5 text-black dark:text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                        </svg>
+                        {t('installing')}
+                      </>
+                    ) : t('install')}
+                  </button>
+                )}
+                {installNginxMutation.error ? <p className="text-xs font-semibold text-rose-500">Installation failed</p> : null}
+              </div>
             </div>
 
-            {/* Nginx Card */}
-            <div className="space-y-4 rounded-2xl border border-[var(--border-color)] bg-black/10 p-5">
-              <h3 className="text-xl font-bold text-[var(--heading-color)]">Nginx</h3>
-              <p className="text-sm text-[var(--text-color)]">Status: <span className="font-semibold text-purple-400">{installNginxMutation.isSuccess ? t('installed') : t('notInstalled')}</span></p>
-              {!installNginxMutation.isSuccess && (
-                <button
-                  className="btn flex items-center justify-center gap-2 cursor-pointer w-full"
-                  onClick={installNginx}
-                  type="button"
-                  disabled={installNginxMutation.isPending}
-                >
-                  {installNginxMutation.isPending ? (
-                    <>
-                      <svg className="animate-spin h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                      </svg>
-                      {t('installing')}
-                    </>
-                  ) : t('install')}
-                </button>
-              )}
-              {installNginxMutation.error ? <p className="text-xs font-semibold text-rose-400">Installation failed</p> : null}
-            </div>
-
-            <button className="btn md:col-span-2 cursor-pointer" onClick={function finishOnboarding(): void { window.location.href = '/'; }} type="button">
+            <button className="btn w-full cursor-pointer py-2" onClick={function finishOnboarding(): void { window.location.href = '/'; }} type="button">
               {t('next')}
             </button>
           </div>
@@ -288,7 +420,7 @@ function Onboarding(): React.JSX.Element {
 }
 
 function Dashboard(): React.JSX.Element {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const [activeTab, setActiveTab] = React.useState<'websites' | 'databases' | 'settings'>('websites');
 
   const statsQuery = useQuery({
@@ -446,24 +578,35 @@ function Dashboard(): React.JSX.Element {
   ] : [];
 
   return (
-    <Layout>
+    <Layout showHeaderControls>
+      {/* Node Meta Section */}
+      {statsQuery.data && (
+        <div className="flex flex-wrap items-center gap-x-6 gap-y-2 mb-6 text-xs text-[var(--text-muted)] font-mono border-b border-[var(--border-color)] pb-4 animate-fadeIn">
+          <div><span className="text-[var(--text-color)] font-medium">OS:</span> {statsQuery.data.osVersion}</div>
+          <div><span className="text-[var(--text-color)] font-medium">Hostname:</span> {statsQuery.data.hostname}</div>
+          <div><span className="text-[var(--text-color)] font-medium">Uptime:</span> {statsQuery.data.uptime}</div>
+        </div>
+      )}
+
       {/* Stats Grid */}
-      <div className="grid gap-6 md:grid-cols-3 mb-10">
+      <div className="grid gap-6 sm:grid-cols-3 mb-10 animate-fadeIn">
         {cards.map(function renderCard(card: CardData): React.JSX.Element {
           return (
-            <article className="card p-6 bg-gradient-to-br from-purple-900/10 via-zinc-900/40 to-indigo-900/10" key={card.label}>
-              <p className="text-xs font-semibold tracking-wider uppercase text-purple-400">{card.label}</p>
-              <p className="mt-3 text-3xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-[var(--title-gradient-from)] to-[var(--title-gradient-to)]">{card.value}</p>
+            <article className="card p-6 flex flex-col justify-between" key={card.label}>
+              <p className="text-xs font-semibold tracking-wider uppercase text-[var(--text-muted)]">{card.label}</p>
+              <p className="mt-3 text-2xl font-bold tracking-tight text-[var(--heading-color)]">{card.value}</p>
             </article>
           );
         })}
       </div>
 
       {/* Navigation Tabs */}
-      <div className="mb-8 border-b border-[var(--border-color)] flex gap-6">
+      <div className="mb-8 border-b border-[var(--border-color)] flex gap-6 animate-fadeIn">
         <button
-          className={`pb-4 px-2 font-bold text-sm transition-all border-b-2 uppercase tracking-wider cursor-pointer ${
-            activeTab === 'websites' ? 'border-purple-500 text-purple-400' : 'border-transparent text-[var(--text-muted)] hover:text-[var(--text-color)]'
+          className={`pb-3 px-1 font-semibold text-xs transition-all border-b-2 uppercase tracking-wider cursor-pointer ${
+            activeTab === 'websites'
+              ? 'border-[var(--accent-color)] text-[var(--text-color)] font-bold'
+              : 'border-transparent text-[var(--text-muted)] hover:text-[var(--text-color)]'
           }`}
           onClick={function selectWebsitesTab() { setActiveTab('websites'); }}
           type="button"
@@ -471,8 +614,10 @@ function Dashboard(): React.JSX.Element {
           {t('websites')}
         </button>
         <button
-          className={`pb-4 px-2 font-bold text-sm transition-all border-b-2 uppercase tracking-wider cursor-pointer ${
-            activeTab === 'databases' ? 'border-purple-500 text-purple-400' : 'border-transparent text-[var(--text-muted)] hover:text-[var(--text-color)]'
+          className={`pb-3 px-1 font-semibold text-xs transition-all border-b-2 uppercase tracking-wider cursor-pointer ${
+            activeTab === 'databases'
+              ? 'border-[var(--accent-color)] text-[var(--text-color)] font-bold'
+              : 'border-transparent text-[var(--text-muted)] hover:text-[var(--text-color)]'
           }`}
           onClick={function selectDatabasesTab() { setActiveTab('databases'); }}
           type="button"
@@ -480,8 +625,10 @@ function Dashboard(): React.JSX.Element {
           {t('databases')}
         </button>
         <button
-          className={`pb-4 px-2 font-bold text-sm transition-all border-b-2 uppercase tracking-wider cursor-pointer ${
-            activeTab === 'settings' ? 'border-purple-500 text-purple-400' : 'border-transparent text-[var(--text-muted)] hover:text-[var(--text-color)]'
+          className={`pb-3 px-1 font-semibold text-xs transition-all border-b-2 uppercase tracking-wider cursor-pointer ${
+            activeTab === 'settings'
+              ? 'border-[var(--accent-color)] text-[var(--text-color)] font-bold'
+              : 'border-transparent text-[var(--text-muted)] hover:text-[var(--text-color)]'
           }`}
           onClick={function selectSettingsTab() { setActiveTab('settings'); }}
           type="button"
@@ -494,11 +641,11 @@ function Dashboard(): React.JSX.Element {
       {activeTab === 'websites' ? (
         <div className="grid gap-8 lg:grid-cols-3 animate-fadeIn">
           {/* Create Website Form */}
-          <section className="card p-6 lg:col-span-1 bg-gradient-to-br from-purple-900/5 via-zinc-900/40 to-indigo-900/5 h-fit">
-            <h3 className="text-xl font-bold mb-4 text-[var(--heading-color)]">{t('createSite')}</h3>
+          <section className="card p-6 lg:col-span-1 h-fit space-y-4">
+            <h3 className="text-base font-semibold text-[var(--heading-color)]">{t('createSite')}</h3>
             <form onSubmit={handleCreateWebsite} className="space-y-4">
               <div>
-                <label className="block text-xs font-semibold text-[var(--text-muted)] mb-1 uppercase tracking-wider">{t('domain')}</label>
+                <label className="block text-xs font-medium text-[var(--text-muted)] mb-1 uppercase tracking-wider">{t('domain')}</label>
                 <input
                   className="input"
                   value={domainInput}
@@ -508,7 +655,7 @@ function Dashboard(): React.JSX.Element {
                 />
               </div>
               <div>
-                <label className="block text-xs font-semibold text-[var(--text-muted)] mb-1 uppercase tracking-wider">{t('ipAddress')}</label>
+                <label className="block text-xs font-medium text-[var(--text-muted)] mb-1 uppercase tracking-wider">{t('ipAddress')}</label>
                 <input
                   className="input"
                   value={ipAddressInput}
@@ -518,7 +665,7 @@ function Dashboard(): React.JSX.Element {
                 />
               </div>
               {createWebsiteMutation.isError ? (
-                <p className="text-xs font-semibold text-rose-400 mt-2">
+                <p className="text-xs font-semibold text-rose-500 mt-2">
                   {(createWebsiteMutation.error as any)?.response?.data?.error || t('siteExistsError')}
                 </p>
               ) : null}
@@ -532,17 +679,17 @@ function Dashboard(): React.JSX.Element {
           </section>
 
           {/* Websites List */}
-          <section className="card p-6 lg:col-span-2 bg-gradient-to-br from-purple-900/5 via-zinc-900/40 to-indigo-900/5">
-            <h3 className="text-xl font-bold mb-4 text-[var(--heading-color)]">{t('websites')}</h3>
+          <section className="card p-6 lg:col-span-2">
+            <h3 className="text-base font-semibold mb-4 text-[var(--heading-color)]">{t('websites')}</h3>
             {websitesQuery.isLoading ? (
-              <p className="text-sm text-[var(--text-muted)]">Loading websites...</p>
+              <p className="text-xs text-[var(--text-muted)]">Loading websites...</p>
             ) : !websitesQuery.data || websitesQuery.data.length === 0 ? (
-              <p className="text-sm text-[var(--text-muted)] italic py-4">{t('noWebsites')}</p>
+              <p className="text-xs text-[var(--text-muted)] italic py-4">{t('noWebsites')}</p>
             ) : (
               <div className="overflow-x-auto">
-                <table className="w-full text-left text-sm border-collapse">
+                <table className="w-full text-left text-xs border-collapse">
                   <thead>
-                    <tr className="border-b border-[var(--border-color)] text-[var(--table-header)] text-xs font-semibold uppercase tracking-wider">
+                    <tr className="border-b border-[var(--border-color)] text-[var(--table-header)] text-[10px] font-semibold uppercase tracking-wider">
                       <th className="py-3 px-4">{t('domain')}</th>
                       <th className="py-3 px-4">{t('ipAddress')}</th>
                       <th className="py-3 px-4">{t('path')}</th>
@@ -554,12 +701,16 @@ function Dashboard(): React.JSX.Element {
                       return (
                         <tr className="border-b border-[var(--border-color)] hover:bg-[var(--table-hover)] transition duration-150" key={site.id}>
                           <td className="py-3 px-4 font-semibold text-[var(--text-color)]">{site.domain}</td>
-                          <td className="py-3 px-4 text-[var(--text-muted)] font-mono text-xs">{site.ipAddress}</td>
-                          <td className="py-3 px-4 text-[var(--text-muted)] font-mono text-xs">{site.path}</td>
+                          <td className="py-3 px-4 text-[var(--text-muted)] font-mono">{site.ipAddress}</td>
+                          <td className="py-3 px-4 text-[var(--text-muted)] font-mono">{site.path}</td>
                           <td className="py-3 px-4 text-right">
                             <button
-                              className="btn-danger cursor-pointer"
-                              onClick={function deleteSelectedWebsite(): void { deleteWebsiteMutation.mutate(site.id); }}
+                              className="btn-danger py-1 px-3 text-[10px] uppercase tracking-wider font-semibold cursor-pointer"
+                              onClick={function deleteSelectedWebsite(): void {
+                                if (window.confirm(i18n.language.startsWith('ru') ? `Вы уверены, что хотите удалить сайт ${site.domain}?` : `Are you sure you want to delete website ${site.domain}?`)) {
+                                  deleteWebsiteMutation.mutate(site.id);
+                                }
+                              }}
                               disabled={deleteWebsiteMutation.isPending}
                             >
                               {t('delete')}
@@ -579,13 +730,13 @@ function Dashboard(): React.JSX.Element {
       {activeTab === 'databases' ? (
         <div className="space-y-8 animate-fadeIn">
           {mariadbStatusQuery.isLoading ? (
-            <p className="text-sm text-[var(--text-muted)]">Loading database status...</p>
+            <p className="text-xs text-[var(--text-muted)]">Loading database status...</p>
           ) : !mariadbStatusQuery.data?.installed ? (
-            <div className="card p-8 bg-gradient-to-br from-purple-900/10 via-zinc-900/40 to-indigo-900/10 text-center max-w-xl mx-auto space-y-4">
-              <h3 className="text-xl font-bold text-[var(--heading-color)]">MariaDB</h3>
-              <p className="text-[var(--text-color)] text-sm">{t('mariadbNotInstalled')}</p>
+            <div className="card p-8 text-center max-w-xl mx-auto space-y-4">
+              <h3 className="text-lg font-semibold text-[var(--heading-color)]">MariaDB</h3>
+              <p className="text-[var(--text-muted)] text-xs">{t('mariadbNotInstalled')}</p>
               <div className="space-y-1 text-left max-w-sm mx-auto">
-                <label className="block text-xs font-semibold text-[var(--text-muted)] uppercase tracking-wider">{t('dbRootPasswordLabel')}</label>
+                <label className="block text-[10px] font-semibold text-[var(--text-muted)] uppercase tracking-wider">{t('dbRootPasswordLabel')}</label>
                 <input
                   className="input"
                   type="password"
@@ -595,7 +746,7 @@ function Dashboard(): React.JSX.Element {
                 />
               </div>
               <button
-                className="btn cursor-pointer w-full max-w-sm"
+                className="btn cursor-pointer w-full max-w-sm py-2"
                 onClick={function installDbService() { installMariaDbMutation.mutate(); }}
                 disabled={installMariaDbMutation.isPending}
               >
@@ -606,11 +757,11 @@ function Dashboard(): React.JSX.Element {
             <div className="space-y-8">
               <div className="grid gap-8 lg:grid-cols-3">
                 {/* Create Database Form */}
-                <section className="card p-6 lg:col-span-1 bg-gradient-to-br from-purple-900/5 via-zinc-900/40 to-indigo-900/5 h-fit">
-                  <h3 className="text-xl font-bold mb-4 text-[var(--heading-color)]">{t('createDb')}</h3>
+                <section className="card p-6 lg:col-span-1 h-fit space-y-4">
+                  <h3 className="text-base font-semibold text-[var(--heading-color)]">{t('createDb')}</h3>
                   <form onSubmit={handleCreateDatabase} className="space-y-4">
                     <div>
-                      <label className="block text-xs font-semibold text-[var(--text-muted)] mb-1 uppercase tracking-wider">{t('dbName')}</label>
+                      <label className="block text-xs font-medium text-[var(--text-muted)] mb-1 uppercase tracking-wider">{t('dbName')}</label>
                       <input
                         className="input"
                         value={dbNameInput}
@@ -620,19 +771,19 @@ function Dashboard(): React.JSX.Element {
                       />
                     </div>
                     <div>
-                      <label className="block text-xs font-semibold text-[var(--text-muted)] mb-1 uppercase tracking-wider">{t('password')}</label>
+                      <label className="block text-xs font-medium text-[var(--text-muted)] mb-1 uppercase tracking-wider">{t('password')}</label>
                       <input
                         className="input"
                         type="password"
                         value={dbPasswordInput}
                         onChange={function handleDbPasswordInputChange(event: React.ChangeEvent<HTMLInputElement>): void { setDbPasswordInput(event.target.value); }}
-                        placeholder={t('password')}
+                        placeholder="Database password"
                       />
                     </div>
                     <div>
-                      <label className="block text-xs font-semibold text-[var(--text-muted)] mb-1 uppercase tracking-wider">{t('dbCharset')}</label>
+                      <label className="block text-xs font-medium text-[var(--text-muted)] mb-1 uppercase tracking-wider">{t('dbCharset')}</label>
                       <select
-                        className="input bg-[var(--input-bg)] text-[var(--input-text)] border border-[var(--input-border)] rounded-xl py-2 px-3 cursor-pointer"
+                        className="input bg-[var(--input-bg)] text-[var(--input-text)] border border-[var(--input-border)] rounded-md py-2 px-3 cursor-pointer"
                         value={dbCharsetInput}
                         onChange={function handleDbCharsetInputChange(event: React.ChangeEvent<HTMLSelectElement>): void { setDbCharsetInput(event.target.value); }}
                       >
@@ -643,7 +794,7 @@ function Dashboard(): React.JSX.Element {
                       </select>
                     </div>
                     {createDatabaseMutation.isError ? (
-                      <p className="text-xs font-semibold text-rose-400 mt-2">
+                      <p className="text-xs font-semibold text-rose-500 mt-2">
                         {(createDatabaseMutation.error as any)?.response?.data?.error || t('dbExistsError')}
                       </p>
                     ) : null}
@@ -657,17 +808,17 @@ function Dashboard(): React.JSX.Element {
                 </section>
 
                 {/* Databases List */}
-                <section className="card p-6 lg:col-span-2 bg-gradient-to-br from-purple-900/5 via-zinc-900/40 to-indigo-900/5">
-                  <h3 className="text-xl font-bold mb-4 text-[var(--heading-color)]">{t('databases')}</h3>
+                <section className="card p-6 lg:col-span-2">
+                  <h3 className="text-base font-semibold mb-4 text-[var(--heading-color)]">{t('databases')}</h3>
                   {databasesQuery.isLoading ? (
-                    <p className="text-sm text-[var(--text-muted)]">{t('loadingDatabases')}</p>
+                    <p className="text-xs text-[var(--text-muted)]">{t('loadingDatabases')}</p>
                   ) : !databasesQuery.data || databasesQuery.data.length === 0 ? (
-                    <p className="text-sm text-[var(--text-muted)] italic py-4">{t('noDatabases')}</p>
+                    <p className="text-xs text-[var(--text-muted)] italic py-4">{t('noDatabases')}</p>
                   ) : (
                     <div className="overflow-x-auto">
-                      <table className="w-full text-left text-sm border-collapse">
+                      <table className="w-full text-left text-xs border-collapse">
                         <thead>
-                          <tr className="border-b border-[var(--border-color)] text-[var(--table-header)] text-xs font-semibold uppercase tracking-wider">
+                          <tr className="border-b border-[var(--border-color)] text-[var(--table-header)] text-[10px] font-semibold uppercase tracking-wider">
                             <th className="py-3 px-4">{t('dbName')}</th>
                             <th className="py-3 px-4 text-right"></th>
                           </tr>
@@ -683,21 +834,25 @@ function Dashboard(): React.JSX.Element {
                                     {isConfirming ? (
                                       <>
                                         <button
-                                          className="btn-danger cursor-pointer py-1 px-3 text-xs font-bold"
+                                          className="btn-danger cursor-pointer py-1 px-3 text-[10px] uppercase font-bold tracking-wider"
                                           onClick={function confirmDelete(): void {
-                                            deleteDatabaseMutation.mutate(db, {
-                                              onSuccess: function() {
-                                                setDeleteConfirmDb(null);
-                                              }
-                                            });
+                                            const confirmMessage = i18n.language.startsWith('ru')
+                                              ? `Вы уверены, что хотите удалить базу данных "${db}"?`
+                                              : `Are you sure you want to delete database "${db}"?`;
+                                            if (window.confirm(confirmMessage)) {
+                                              deleteDatabaseMutation.mutate(db, {
+                                                onSuccess: function() {
+                                                  setDeleteConfirmDb(null);
+                                                }
+                                              });
+                                            }
                                           }}
                                           disabled={deleteDatabaseMutation.isPending}
                                         >
                                           {t('confirmDelete')}
                                         </button>
                                         <button
-                                          className="btn cursor-pointer py-1 px-3 text-xs font-bold bg-neutral-600 hover:bg-neutral-500 text-white"
-                                          style={{ background: '#71717a', boxShadow: 'none' }}
+                                          className="btn-secondary cursor-pointer py-1 px-3 text-[10px] uppercase font-bold tracking-wider"
                                           onClick={function cancelDelete(): void { setDeleteConfirmDb(null); }}
                                         >
                                           {t('cancel')}
@@ -705,21 +860,23 @@ function Dashboard(): React.JSX.Element {
                                       </>
                                     ) : (
                                       <>
+                                        {phpmyadminStatusQuery.data?.installed && (
+                                          <button
+                                            className="btn-secondary cursor-pointer py-1 px-3 text-[10px] uppercase font-bold tracking-wider"
+                                            onClick={function openAutologin(): void {
+                                              api.post<{ token: string; db: string }>('/databases/autologin', { db }).then(function(res) {
+                                                const autologinUrl = window.location.protocol + '//' + window.location.hostname + ':8080/autologin.php?token=' + res.data.token + '&db=' + res.data.db;
+                                                window.open(autologinUrl, '_blank', 'noopener,noreferrer');
+                                              }).catch(function(err) {
+                                                console.error('Autologin failed:', err);
+                                              });
+                                            }}
+                                          >
+                                            {t('open')}
+                                          </button>
+                                        )}
                                         <button
-                                          className="btn cursor-pointer py-1 px-3 text-xs font-bold"
-                                          onClick={function openAutologin(): void {
-                                            api.post<{ token: string; db: string }>('/databases/autologin', { db }).then(function(res) {
-                                              const autologinUrl = window.location.protocol + '//' + window.location.hostname + ':8080/autologin.php?token=' + res.data.token + '&db=' + res.data.db;
-                                              window.open(autologinUrl, '_blank');
-                                            }).catch(function(err) {
-                                              console.error('Autologin failed:', err);
-                                            });
-                                          }}
-                                        >
-                                          {t('open')}
-                                        </button>
-                                        <button
-                                          className="btn-danger cursor-pointer py-1 px-3 text-xs font-bold"
+                                          className="btn-danger cursor-pointer py-1 px-3 text-[10px] uppercase font-bold tracking-wider"
                                           onClick={function startDelete(): void { setDeleteConfirmDb(db); }}
                                         >
                                           {t('delete')}
@@ -739,33 +896,41 @@ function Dashboard(): React.JSX.Element {
               </div>
 
               {/* phpMyAdmin Panel */}
-              <section className="card p-6 bg-gradient-to-br from-purple-900/5 via-zinc-900/40 to-indigo-900/5">
-                <h3 className="text-xl font-bold mb-4 text-[var(--heading-color)]">{t('phpMyAdminStatus')}</h3>
-                {phpmyadminStatusQuery.isLoading ? (
-                  <p className="text-sm text-[var(--text-muted)]">Loading phpMyAdmin status...</p>
-                ) : phpmyadminStatusQuery.data?.installed ? (
-                  <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
-                    <p className="text-[var(--text-color)] text-sm">{t('phpMyAdminInstalled')}</p>
+              <section className="card p-6">
+                <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+                  <div>
+                    <h3 className="text-base font-semibold text-[var(--heading-color)] mb-1">{t('phpMyAdminStatus')}</h3>
+                    <p className="text-[var(--text-muted)] text-xs">
+                      {phpmyadminStatusQuery.data?.installed ? t('phpMyAdminInstalled') : t('phpMyAdminNotInstalled')}
+                    </p>
+                  </div>
+
+                  {phpmyadminStatusQuery.isLoading ? (
+                    <p className="text-xs text-[var(--text-muted)]">Loading status...</p>
+                  ) : phpmyadminStatusQuery.data?.installed ? (
                     <button
-                      className="btn cursor-pointer"
+                      className="btn cursor-pointer py-2 px-4"
                       onClick={function openPma() {
-                        window.open(window.location.protocol + '//' + window.location.hostname + ':8080', '_blank');
+                        api.post<{ token: string; db: string }>('/databases/autologin', { db: '' }).then(function(res) {
+                          const autologinUrl = window.location.protocol + '//' + window.location.hostname + ':8080/autologin.php?token=' + res.data.token;
+                          window.open(autologinUrl, '_blank', 'noopener,noreferrer');
+                        }).catch(function(err) {
+                          console.error('Autologin failed:', err);
+                          window.open(window.location.protocol + '//' + window.location.hostname + ':8080', '_blank', 'noopener,noreferrer');
+                        });
                       }}
                     >
-                      {t('openPhpMyAdmin')}
+                      {t('open')}
                     </button>
-                  </div>
-                ) : (
-                  <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
-                    <p className="text-[var(--text-color)] text-sm">{t('phpMyAdminNotInstalled')}</p>
+                  ) : (
                     <button
-                      className="btn flex items-center justify-center gap-2 cursor-pointer"
+                      className="btn flex items-center justify-center gap-2 cursor-pointer py-2 px-4"
                       onClick={function installPma() { installPhpmyadminMutation.mutate(); }}
                       disabled={installPhpmyadminMutation.isPending}
                     >
                       {installPhpmyadminMutation.isPending ? (
                         <>
-                          <svg className="animate-spin h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                          <svg className="animate-spin h-3.5 w-3.5 text-black dark:text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                             <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
                             <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                           </svg>
@@ -773,8 +938,8 @@ function Dashboard(): React.JSX.Element {
                         </>
                       ) : t('installPhpMyAdmin')}
                     </button>
-                  </div>
-                )}
+                  )}
+                </div>
               </section>
             </div>
           )}
@@ -783,23 +948,23 @@ function Dashboard(): React.JSX.Element {
 
       {activeTab === 'settings' ? (
         <div className="grid gap-8 lg:grid-cols-2 animate-fadeIn">
-          <section className="card p-6 bg-gradient-to-br from-purple-900/5 via-zinc-900/40 to-indigo-900/5">
-            <h3 className="text-xl font-bold mb-4 text-[var(--heading-color)]">{t('settings')}</h3>
+          <section className="card p-6 space-y-6">
+            <h3 className="text-base font-semibold text-[var(--heading-color)] border-b border-[var(--border-color)] pb-3">{t('settings')}</h3>
 
             {/* Language Setting */}
-            <div className="flex items-center justify-between py-4 border-b border-[var(--border-color)]">
+            <div className="flex items-center justify-between py-2">
               <div>
-                <p className="font-semibold text-[var(--text-color)]">{t('language')}</p>
-                <p className="text-xs text-[var(--text-muted)]">{t('changeLanguage')}</p>
+                <p className="font-semibold text-xs text-[var(--text-color)]">{t('language')}</p>
+                <p className="text-[10px] text-[var(--text-muted)]">{t('changeLanguage')}</p>
               </div>
               <LanguageSwitch />
             </div>
 
             {/* Theme Setting */}
-            <div className="flex items-center justify-between py-4">
+            <div className="flex items-center justify-between py-2">
               <div>
-                <p className="font-semibold text-[var(--text-color)]">{t('theme')}</p>
-                <p className="text-xs text-[var(--text-muted)]">{t('switchTheme')}</p>
+                <p className="font-semibold text-xs text-[var(--text-color)]">{t('theme')}</p>
+                <p className="text-[10px] text-[var(--text-muted)]">{t('switchTheme')}</p>
               </div>
               <ThemeSwitch />
             </div>
@@ -830,7 +995,7 @@ function Gate(): React.JSX.Element {
   });
 
   if (setupQuery.isLoading) {
-    return <Layout><p>Loading...</p></Layout>;
+    return <Layout><p className="text-sm text-[var(--text-muted)]">Loading...</p></Layout>;
   }
 
   if (setupQuery.data?.configured === false) {
