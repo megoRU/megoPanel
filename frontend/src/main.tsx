@@ -286,7 +286,7 @@ function Login(): React.JSX.Element {
       return response.data;
     },
     retry: false,
-    enabled: setupQuery.data?.configured === true,
+    enabled: setupQuery.data !== undefined && setupQuery.data.configured === true,
   });
 
   const mutation = useMutation({
@@ -362,6 +362,33 @@ function Onboarding(): React.JSX.Element {
     },
   });
 
+  const onboardingMariaDbStatusQuery = useQuery({
+    queryKey: ['onboarding-mariadb-status'],
+    queryFn: async function loadOnboardingMariaDbStatus(): Promise<{ name: string; installed: boolean }> {
+      const response = await api.get<{ name: string; installed: boolean }>('/install/mariadb/status');
+      return response.data;
+    },
+    enabled: step === 2,
+  });
+
+  const onboardingNginxStatusQuery = useQuery({
+    queryKey: ['onboarding-nginx-status'],
+    queryFn: async function loadOnboardingNginxStatus(): Promise<{ name: string; installed: boolean }> {
+      const response = await api.get<{ name: string; installed: boolean }>('/install/nginx/status');
+      return response.data;
+    },
+    enabled: step === 2,
+  });
+
+  const onboardingPhpmyadminStatusQuery = useQuery({
+    queryKey: ['onboarding-phpmyadmin-status'],
+    queryFn: async function loadOnboardingPhpmyadminStatus(): Promise<{ name: string; installed: boolean }> {
+      const response = await api.get<{ name: string; installed: boolean }>('/install/phpmyadmin/status');
+      return response.data;
+    },
+    enabled: step === 2,
+  });
+
   const adminMutation = useMutation({
     mutationFn: function createAdministrator(formData: FormData) {
       const username = formData.get('username');
@@ -378,7 +405,7 @@ function Onboarding(): React.JSX.Element {
       return api.post('/install/mariadb', { remoteAccess: remoteAccessEnabled, rootPassword: dbRootPassword });
     },
     onSuccess: function handleMariaDbInstalled(): void {
-      // Just keep step 2 and let user see success
+      void onboardingMariaDbStatusQuery.refetch();
     },
   });
 
@@ -387,7 +414,7 @@ function Onboarding(): React.JSX.Element {
       return api.post('/install/nginx');
     },
     onSuccess: function handleNginxInstalled(): void {
-      // Just keep step 2 and let user see success
+      void onboardingNginxStatusQuery.refetch();
     },
   });
 
@@ -396,7 +423,7 @@ function Onboarding(): React.JSX.Element {
       return api.post('/install/phpmyadmin');
     },
     onSuccess: function handlePmaInstalled(): void {
-      // Just keep step 2 and let user see success
+      void onboardingPhpmyadminStatusQuery.refetch();
     },
   });
 
@@ -433,7 +460,7 @@ function Onboarding(): React.JSX.Element {
     return <Layout><p className="text-sm text-[var(--text-muted)]">{t('loading')}</p></Layout>;
   }
 
-  if (setupQuery.data?.configured === true) {
+  if (setupQuery.data !== undefined && setupQuery.data.configured === true && step === 1) {
     return <Navigate to="/" />;
   }
 
@@ -477,11 +504,11 @@ function Onboarding(): React.JSX.Element {
                     <h3 className="text-base font-semibold text-[var(--heading-color)]">MariaDB</h3>
                     <div>
                       <span className={`text-[10px] uppercase font-bold px-2 py-0.5 rounded ${
-                        installMariaDbMutation.isSuccess
+                        onboardingMariaDbStatusQuery.data !== undefined && onboardingMariaDbStatusQuery.data.installed === true
                           ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
                           : 'bg-zinc-500/10 text-zinc-400 border border-zinc-500/20'
                       }`}>
-                        {installMariaDbMutation.isSuccess ? t('installed') : t('notInstalled')}
+                        {onboardingMariaDbStatusQuery.data !== undefined && onboardingMariaDbStatusQuery.data.installed === true ? t('installed') : t('notInstalled')}
                       </span>
                     </div>
                   </div>
@@ -490,7 +517,7 @@ function Onboarding(): React.JSX.Element {
                     <input className="accent-white border-zinc-800 rounded" checked={remoteAccessEnabled} onChange={changeRemoteAccess} type="checkbox" />
                     {t('remote')}
                   </label>
-                  {!installMariaDbMutation.isSuccess && (
+                  {(onboardingMariaDbStatusQuery.data === undefined || onboardingMariaDbStatusQuery.data.installed !== true) && (
                     <div className="space-y-1">
                       <label className="block text-[10px] font-semibold text-[var(--text-muted)] uppercase tracking-wider">{t('dbRootPasswordLabel')}</label>
                       <input
@@ -504,7 +531,7 @@ function Onboarding(): React.JSX.Element {
                   )}
                 </div>
                 <div>
-                  {!installMariaDbMutation.isSuccess && (
+                  {(onboardingMariaDbStatusQuery.data === undefined || onboardingMariaDbStatusQuery.data.installed !== true) && (
                     <button
                       className="btn flex items-center justify-center gap-2 cursor-pointer w-full text-xs py-1.5"
                       onClick={installMariaDb}
@@ -533,11 +560,11 @@ function Onboarding(): React.JSX.Element {
                     <h3 className="text-base font-semibold text-[var(--heading-color)]">Nginx</h3>
                     <div>
                       <span className={`text-[10px] uppercase font-bold px-2 py-0.5 rounded ${
-                        installNginxMutation.isSuccess
+                        onboardingNginxStatusQuery.data !== undefined && onboardingNginxStatusQuery.data.installed === true
                           ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
                           : 'bg-zinc-500/10 text-zinc-400 border border-zinc-500/20'
                       }`}>
-                        {installNginxMutation.isSuccess ? t('installed') : t('notInstalled')}
+                        {onboardingNginxStatusQuery.data !== undefined && onboardingNginxStatusQuery.data.installed === true ? t('installed') : t('notInstalled')}
                       </span>
                     </div>
                   </div>
@@ -545,7 +572,7 @@ function Onboarding(): React.JSX.Element {
                   <p className="text-xs text-[var(--text-muted)]">{t('nginxDescription')}</p>
                 </div>
                 <div>
-                  {!installNginxMutation.isSuccess && (
+                  {(onboardingNginxStatusQuery.data === undefined || onboardingNginxStatusQuery.data.installed !== true) && (
                     <button
                       className="btn flex items-center justify-center gap-2 cursor-pointer w-full text-xs py-1.5"
                       onClick={installNginx}
@@ -574,11 +601,11 @@ function Onboarding(): React.JSX.Element {
                     <h3 className="text-base font-semibold text-[var(--heading-color)]">phpMyAdmin</h3>
                     <div>
                       <span className={`text-[10px] uppercase font-bold px-2 py-0.5 rounded ${
-                        installPhpmyadminMutation.isSuccess
+                        onboardingPhpmyadminStatusQuery.data !== undefined && onboardingPhpmyadminStatusQuery.data.installed === true
                           ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
                           : 'bg-zinc-500/10 text-zinc-400 border border-zinc-500/20'
                       }`}>
-                        {installPhpmyadminMutation.isSuccess ? t('installed') : t('notInstalled')}
+                        {onboardingPhpmyadminStatusQuery.data !== undefined && onboardingPhpmyadminStatusQuery.data.installed === true ? t('installed') : t('notInstalled')}
                       </span>
                     </div>
                   </div>
@@ -586,7 +613,7 @@ function Onboarding(): React.JSX.Element {
                   <p className="text-xs text-[var(--text-muted)]">{t('phpmyadminDescription')}</p>
                 </div>
                 <div>
-                  {!installPhpmyadminMutation.isSuccess && (
+                  {(onboardingPhpmyadminStatusQuery.data === undefined || onboardingPhpmyadminStatusQuery.data.installed !== true) && (
                     <button
                       className="btn flex items-center justify-center gap-2 cursor-pointer w-full text-xs py-1.5"
                       onClick={installPhpmyadmin}
@@ -1218,7 +1245,7 @@ function Gate(): React.JSX.Element {
       return response.data;
     },
     retry: false,
-    enabled: setupQuery.data?.configured === true,
+    enabled: setupQuery.data !== undefined && setupQuery.data.configured === true,
   });
 
   if (setupQuery.isLoading) {

@@ -43,6 +43,7 @@ func (a *App) Run() error {
 
 type noopPackageManager struct{}
 
-func (n *noopPackageManager) Install(string) error { return nil }
-func (n *noopPackageManager) Restart(string) error { return nil }
-func (n *noopPackageManager) Enable(string) error  { return nil }
+func (n *noopPackageManager) Install(string) error       { return nil }
+func (n *noopPackageManager) InstallMany([]string) error { return nil }
+func (n *noopPackageManager) Restart(string) error       { return nil }
+func (n *noopPackageManager) Enable(string) error        { return nil }
