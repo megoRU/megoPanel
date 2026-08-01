@@ -39,8 +39,8 @@ log_step "Deleting MegoPanel data and configuration files..."
 rm -rf /etc/megopanel
 rm -rf /var/lib/megopanel
 rm -rf /opt/megopanel
-rm -rf /root/megopanel
-rm -rf ~/megopanel
+rm -rf /root/megoPanel
+rm -rf ~/megoPanel
 
 log_step "Removing megopanel user and group..."
 userdel -r megopanel 2>/dev/null || true

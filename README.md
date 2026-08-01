@@ -142,57 +142,8 @@ Examples:
 <summary><b>Complete removal</b></summary>
 
 ```bash
-sudo systemctl stop megopanel 2>/dev/null || true
-sudo systemctl disable megopanel 2>/dev/null || true
-
-sudo rm -f /etc/systemd/system/megopanel.service
-sudo systemctl daemon-reload
-sudo systemctl reset-failed
-
-sudo rm -f /usr/local/bin/megopanel
-
-sudo rm -rf /etc/megopanel
-sudo rm -rf /var/lib/megopanel
-sudo rm -rf /opt/megopanel
-sudo rm -rf /root/megopanel
-sudo rm -rf ~/megopanel
-
-sudo userdel -r megopanel 2>/dev/null || true
-sudo groupdel megopanel 2>/dev/null || true
-
-# Удаление Nginx
-sudo systemctl stop nginx 2>/dev/null || true
-sudo apt purge -y nginx nginx-common
-sudo apt autoremove --purge -y
-sudo rm -rf /etc/nginx
-sudo rm -rf /var/log/nginx
-sudo rm -rf /var/www
-
-# Удаление MariaDB
-sudo systemctl stop mariadb 2>/dev/null || true
-sudo apt purge -y mariadb-server mariadb-client mariadb-common
-sudo apt autoremove --purge -y
-sudo rm -rf /etc/mysql
-sudo rm -rf /var/lib/mysql
-sudo rm -rf /var/log/mysql
-
-# Удаление phpMyAdmin
-sudo apt purge -y phpmyadmin
-sudo apt autoremove --purge -y
-sudo rm -rf /etc/phpmyadmin
-sudo rm -rf /usr/share/phpmyadmin
-sudo rm -rf /var/lib/phpmyadmin
-
-# Очистка
-sudo apt autoclean
-sudo apt clean
-
-# Проверка
-dpkg -l | grep -Ei 'mariadb|mysql|phpmyadmin|nginx'
-systemctl status mariadb
-systemctl status nginx
-which mysql
-which nginx
+cd megoPanel
+sudo scripts/uninstall-debian.sh
 ```
 
 </details>

@@ -190,17 +190,10 @@ func readFirst(path string, prefix string) string {
 	}
 	return runtime.GOOS
 }
+var StartTime = time.Now()
+
 func readUptime() string {
-	data, err := os.ReadFile("/proc/uptime")
-	if err != nil {
-		return "unknown"
-	}
-	fields := strings.Fields(string(data))
-	if len(fields) == 0 {
-		return "unknown"
-	}
-	seconds, _ := strconv.ParseFloat(fields[0], 64)
-	return (time.Duration(seconds) * time.Second).Round(time.Second).String()
+	return time.Since(StartTime).Round(time.Second).String()
 }
 func sampleCPU() float64 {
 	data, _ := os.ReadFile("/proc/loadavg")
@@ -288,31 +281,38 @@ func (s *InstallService) InstallPhpMyAdmin() (*domain.ServiceState, error) {
 		blowfishSecret = blowfishSecret[:32]
 	}
 
-	var rootPassword string
-	if val, found, err := s.settings.Get("mariadb_root_password"); err == nil && found {
-		rootPassword = val
-	}
-
 	pmaConfig := `<?php
 $cfg['blowfish_secret'] = '` + blowfishSecret + `';
 $i = 0;
 $i++;
 
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
+
 $autologin = false;
 if (isset($_COOKIE['pma_autologin_token'])) {
     $token = preg_replace('/[^a-f0-9]/', '', $_COOKIE['pma_autologin_token']);
-    if ($token && file_exists('/var/www/phpmyadmin/token_' . $token)) {
-        $mtime = filemtime('/var/www/phpmyadmin/token_' . $token);
+    $token_file = '/var/www/phpmyadmin/token_' . $token;
+    if ($token && file_exists($token_file)) {
+        $mtime = filemtime($token_file);
         if (time() - $mtime < 30) {
-            $autologin = true;
+            $content = file_get_contents($token_file);
+            $parts = explode(':', $content, 2);
+            if (count($parts) === 2) {
+                $_SESSION['pma_autologin_user'] = $parts[0];
+                $_SESSION['pma_autologin_pass'] = $parts[1];
+            }
         }
+        @unlink($token_file);
     }
+    setcookie('pma_autologin_token', '', time() - 3600, '/');
 }
 
-if ($autologin) {
+if (isset($_SESSION['pma_autologin_user']) && isset($_SESSION['pma_autologin_pass'])) {
     $cfg['Servers'][$i]['auth_type'] = 'config';
-    $cfg['Servers'][$i]['user'] = 'root';
-    $cfg['Servers'][$i]['password'] = '` + strings.ReplaceAll(rootPassword, "'", "\\'") + `';
+    $cfg['Servers'][$i]['user'] = $_SESSION['pma_autologin_user'];
+    $cfg['Servers'][$i]['password'] = $_SESSION['pma_autologin_pass'];
 } else {
     $cfg['Servers'][$i]['auth_type'] = 'cookie';
 }
