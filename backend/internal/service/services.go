@@ -272,10 +272,12 @@ func (s *InstallService) InstallPhpMyAdmin() (*domain.ServiceState, error) {
 	}
 
 	_ = os.MkdirAll("/var/www/phpmyadmin", 0755)
-	downloadCmd := exec.Command("sh", "-c", "curl -sSL https://files.phpmyadmin.net/phpMyAdmin/5.2.1/phpMyAdmin-5.2.1-all-languages.tar.gz | tar -xz --strip-components=1 -C /var/www/phpmyadmin")
+	downloadCmd := exec.Command("sh", "-c", "curl -sSL --connect-timeout 15 --retry 3 --retry-delay 2 https://files.phpmyadmin.net/phpMyAdmin/5.2.1/phpMyAdmin-5.2.1-all-languages.tar.gz | tar -xz --strip-components=1 -C /var/www/phpmyadmin")
 	if err := downloadCmd.Run(); err != nil {
 		return nil, fmt.Errorf("failed to download phpmyadmin: %w", err)
 	}
+	chownCmd := exec.Command("chown", "-R", "33:33", "/var/www/phpmyadmin")
+	_ = chownCmd.Run()
 
 	blowfishSecret, _ := randomToken()
 	if len(blowfishSecret) > 32 {
@@ -365,6 +367,8 @@ exit;
         fastcgi_pass unix:` + socketPath + `;
     }
 }`
+	_ = os.MkdirAll("/etc/nginx/sites-available", 0755)
+	_ = os.MkdirAll("/etc/nginx/sites-enabled", 0755)
 	_ = os.WriteFile("/etc/nginx/sites-available/phpmyadmin", []byte(nginxConfig), 0644)
 	_ = os.Remove("/etc/nginx/sites-enabled/phpmyadmin")
 	_ = os.Symlink("/etc/nginx/sites-available/phpmyadmin", "/etc/nginx/sites-enabled/phpmyadmin")
