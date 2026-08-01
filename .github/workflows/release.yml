@@ -2,6 +2,9 @@ name: Release
 
 on:
   push:
+    branches:
+      - main
+      - master
     tags:
       - 'v*'
 
@@ -71,5 +74,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: megopanel.tar.gz
+          tag_name: ${{ github.ref_type == 'tag' && github.ref_name || 'latest' }}
+          draft: ${{ github.ref_type != 'tag' }}
+          prerelease: ${{ github.ref_type != 'tag' }}
+          make_latest: ${{ github.ref_type == 'tag' && 'true' || 'false' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
