@@ -258,28 +258,34 @@ func (s *InstallService) InstallNginx() (*domain.ServiceState, error) {
 }
 
 func (s *InstallService) InstallPhpMyAdmin() (*domain.ServiceState, error) {
-	if err := s.pm.Install("php-fpm"); err != nil {
-		return nil, err
-	}
-	if err := s.pm.Install("php-mysql"); err != nil {
-		return nil, err
-	}
-	if err := s.pm.Install("php-mbstring"); err != nil {
-		return nil, err
-	}
-	if err := s.pm.Install("php-xml"); err != nil {
-		return nil, err
+	packages := []string{"nginx", "php-fpm", "php-mysql", "php-mbstring", "php-xml", "php-curl", "php-zip", "php-gd", "tar", "curl"}
+	for _, packageName := range packages {
+		if err := s.pm.Install(packageName); err != nil {
+			return nil, err
+		}
 	}
 
-	_ = os.MkdirAll("/var/www/phpmyadmin", 0755)
-	downloadCmd := exec.Command("sh", "-c", "curl -sSL --connect-timeout 15 --retry 3 --retry-delay 2 https://files.phpmyadmin.net/phpMyAdmin/5.2.1/phpMyAdmin-5.2.1-all-languages.tar.gz | tar -xz --strip-components=1 -C /var/www/phpmyadmin")
-	if err := downloadCmd.Run(); err != nil {
-		return nil, fmt.Errorf("failed to download phpmyadmin: %w", err)
+	if err := os.RemoveAll("/var/www/phpmyadmin"); err != nil {
+		return nil, fmt.Errorf("failed to clean phpmyadmin directory: %w", err)
 	}
-	chownCmd := exec.Command("chown", "-R", "33:33", "/var/www/phpmyadmin")
-	_ = chownCmd.Run()
+	if err := os.MkdirAll("/var/www/phpmyadmin", 0755); err != nil {
+		return nil, fmt.Errorf("failed to create phpmyadmin directory: %w", err)
+	}
+	archivePath := "/tmp/phpmyadmin-5.2.1-all-languages.tar.gz"
+	downloadCmd := exec.Command("curl", "--fail", "--show-error", "--location", "--connect-timeout", "15", "--retry", "3", "--retry-delay", "2", "--output", archivePath, "https://files.phpmyadmin.net/phpMyAdmin/5.2.1/phpMyAdmin-5.2.1-all-languages.tar.gz")
+	if output, err := downloadCmd.CombinedOutput(); err != nil {
+		return nil, fmt.Errorf("failed to download phpmyadmin archive: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	defer os.Remove(archivePath)
+	extractCmd := exec.Command("tar", "-xzf", archivePath, "--strip-components=1", "-C", "/var/www/phpmyadmin")
+	if output, err := extractCmd.CombinedOutput(); err != nil {
+		return nil, fmt.Errorf("failed to extract phpmyadmin archive: %w: %s", err, strings.TrimSpace(string(output)))
+	}
 
-	blowfishSecret, _ := randomToken()
+	blowfishSecret, err := randomToken()
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate phpmyadmin secret: %w", err)
+	}
 	if len(blowfishSecret) > 32 {
 		blowfishSecret = blowfishSecret[:32]
 	}
@@ -323,8 +329,9 @@ $cfg['Servers'][$i]['host'] = 'localhost';
 $cfg['Servers'][$i]['compress'] = false;
 $cfg['Servers'][$i]['AllowNoPassword'] = false;
 `
-	_ = os.WriteFile("/var/www/phpmyadmin/config.inc.php", []byte(pmaConfig), 0644)
-	_ = os.Chown("/var/www/phpmyadmin/config.inc.php", 33, 33)
+	if err := os.WriteFile("/var/www/phpmyadmin/config.inc.php", []byte(pmaConfig), 0644); err != nil {
+		return nil, fmt.Errorf("failed to write phpmyadmin configuration: %w", err)
+	}
 
 	autologinPHP := `<?php
 if (isset($_GET['token'])) {
@@ -337,9 +344,13 @@ $db = isset($_GET['db']) ? urlencode($_GET['db']) : '';
 header('Location: index.php' . ($db ? '?db=' . $db : ''));
 exit;
 `
-	_ = os.WriteFile("/var/www/phpmyadmin/autologin.php", []byte(autologinPHP), 0644)
-	_ = os.Chown("/var/www/phpmyadmin/autologin.php", 33, 33)
-	_ = os.Chown("/var/www/phpmyadmin", 33, 33)
+	if err := os.WriteFile("/var/www/phpmyadmin/autologin.php", []byte(autologinPHP), 0644); err != nil {
+		return nil, fmt.Errorf("failed to write phpmyadmin autologin script: %w", err)
+	}
+	chownCmd := exec.Command("chown", "-R", "www-data:www-data", "/var/www/phpmyadmin")
+	if output, err := chownCmd.CombinedOutput(); err != nil {
+		return nil, fmt.Errorf("failed to set phpmyadmin ownership: %w: %s", err, strings.TrimSpace(string(output)))
+	}
 
 	phpServiceName := "php-fpm"
 	if _, err := exec.LookPath("systemctl"); err == nil {
@@ -349,10 +360,17 @@ exit;
 			phpServiceName = strings.TrimSuffix(strings.TrimSpace(string(output)), ".service")
 		}
 	}
-	_ = s.pm.Enable(phpServiceName)
-	_ = s.pm.Restart(phpServiceName)
+	if err := s.pm.Enable(phpServiceName); err != nil {
+		return nil, err
+	}
+	if err := s.pm.Restart(phpServiceName); err != nil {
+		return nil, err
+	}
 
 	socketPath := findPHPFpmSocket(phpServiceName)
+	if _, err := os.Stat(socketPath); err != nil {
+		return nil, fmt.Errorf("php-fpm socket %s is not available: %w", socketPath, err)
+	}
 	nginxConfig := `server {
     listen 8080 default_server;
     listen [::]:8080 default_server;
@@ -367,13 +385,35 @@ exit;
         fastcgi_pass unix:` + socketPath + `;
     }
 }`
-	_ = os.MkdirAll("/etc/nginx/sites-available", 0755)
-	_ = os.MkdirAll("/etc/nginx/sites-enabled", 0755)
-	_ = os.WriteFile("/etc/nginx/sites-available/phpmyadmin", []byte(nginxConfig), 0644)
-	_ = os.Remove("/etc/nginx/sites-enabled/phpmyadmin")
-	_ = os.Symlink("/etc/nginx/sites-available/phpmyadmin", "/etc/nginx/sites-enabled/phpmyadmin")
-
-	_ = s.pm.Restart("nginx")
+	if err := os.MkdirAll("/etc/nginx/sites-available", 0755); err != nil {
+		return nil, fmt.Errorf("failed to create nginx sites-available directory: %w", err)
+	}
+	if err := os.MkdirAll("/etc/nginx/sites-enabled", 0755); err != nil {
+		return nil, fmt.Errorf("failed to create nginx sites-enabled directory: %w", err)
+	}
+	if err := os.WriteFile("/etc/nginx/sites-available/phpmyadmin", []byte(nginxConfig), 0644); err != nil {
+		return nil, fmt.Errorf("failed to write phpmyadmin nginx configuration: %w", err)
+	}
+	if err := os.Remove("/etc/nginx/sites-enabled/phpmyadmin"); err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("failed to replace phpmyadmin nginx symlink: %w", err)
+	}
+	if err := os.Symlink("/etc/nginx/sites-available/phpmyadmin", "/etc/nginx/sites-enabled/phpmyadmin"); err != nil {
+		return nil, fmt.Errorf("failed to enable phpmyadmin nginx site: %w", err)
+	}
+	nginxTestCmd := exec.Command("nginx", "-t")
+	if output, err := nginxTestCmd.CombinedOutput(); err != nil {
+		return nil, fmt.Errorf("nginx configuration test failed: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	if err := s.pm.Enable("nginx"); err != nil {
+		return nil, err
+	}
+	if err := s.pm.Restart("nginx"); err != nil {
+		return nil, err
+	}
+	healthCheckCmd := exec.Command("curl", "--fail", "--silent", "--show-error", "--location", "--max-time", "10", "--output", "/dev/null", "http://127.0.0.1:8080/")
+	if output, err := healthCheckCmd.CombinedOutput(); err != nil {
+		return nil, fmt.Errorf("phpmyadmin did not respond after installation: %w: %s", err, strings.TrimSpace(string(output)))
+	}
 
 	state := &domain.ServiceState{Name: "phpmyadmin", Installed: true, UpdatedAt: time.Now()}
 	return state, s.repo.Save(state)
