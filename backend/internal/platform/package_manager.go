@@ -24,13 +24,9 @@ func DetectPackageManager() (PackageManager, error) {
 	return nil, errors.New("unsupported Linux distribution; Debian and Ubuntu are supported")
 }
 func (m *AptManager) Install(packageName string) error {
-	if err := runCommand("dpkg", "--configure", "-a"); err != nil {
-		return err
-	}
-	if err := runCommand("apt-get", "update"); err != nil {
-		return err
-	}
-	return runCommand("apt-get", "install", "-y", packageName)
+	_ = runCommand("dpkg", "--configure", "-a")
+	_ = runCommand("apt-get", "update")
+	return runCommand("apt-get", "install", "-y", "-o", "Dpkg::Options::=--force-confdef", "-o", "Dpkg::Options::=--force-confold", packageName)
 }
 func (m *AptManager) Restart(serviceName string) error {
 	return runCommand("systemctl", "restart", serviceName)
