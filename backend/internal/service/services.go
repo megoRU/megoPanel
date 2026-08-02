@@ -454,7 +454,7 @@ $cfg['Servers'][$i]['AllowNoPassword'] = false;
 	if err := s.pm.Restart("nginx"); err != nil {
 		return nil, err
 	}
-	healthCheckCmd := exec.Command("curl", "--fail", "--silent", "--show-error", "--location", "--max-time", "10", "--output", "/dev/null", "http://127.0.0.1:8080/")
+	healthCheckCmd := exec.Command("curl", "--fail", "--silent", "--show-error", "--max-time", "10", "--output", "/dev/null", "http://127.0.0.1:8080/")
 	if output, err := healthCheckCmd.CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("phpmyadmin did not respond after installation: %w: %s", err, strings.TrimSpace(string(output)))
 	}
