@@ -8,6 +8,7 @@ import (
 	"mego-panel/backend/internal/platform"
 	"mego-panel/backend/internal/repository"
 	"mego-panel/backend/internal/service"
+	"strings"
 )
 
 type App struct {
@@ -34,6 +35,18 @@ func New(cfg *config.Config, logger *slog.Logger) (*App, error) {
 	install := service.NewInstallService(services, pm, settings)
 	update := service.NewUpdateService()
 	autologin := service.NewAutologinStore()
+
+	// Automatically ensure phpMyAdmin autologin files are present and updated on startup
+	port := "8888"
+	if cfg != nil {
+		if parts := strings.Split(cfg.Server.Address, ":"); len(parts) > 0 && parts[len(parts)-1] != "" {
+			port = parts[len(parts)-1]
+		}
+	}
+	if err := install.EnsureAutologinFiles(port); err != nil {
+		logger.Warn("failed to ensure phpmyadmin autologin files on startup", "error", err)
+	}
+
 	router := api.NewRouter(api.RouterDeps{Config: cfg, Auth: auth, Dashboard: dashboard, Install: install, Update: update, DB: db, Autologin: autologin})
 	return &App{cfg: cfg, logger: logger, router: router}, nil
 }
