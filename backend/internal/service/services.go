@@ -424,7 +424,6 @@ $cfg['Servers'][$i]['AllowNoPassword'] = false;
         try_files $uri $uri/ =404;
     }
     location ~ \.php$ {
-        try_files $uri =404;
         include snippets/fastcgi-php.conf;
         fastcgi_pass unix:` + socketPath + `;
         fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;

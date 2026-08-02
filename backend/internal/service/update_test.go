@@ -8,12 +8,12 @@ func TestIsNewerVersion(t *testing.T) {
 		latest   string
 		expected bool
 	}{
-		{"v1.1.0", "1.1.0", false},
-		{"v1.1.0", "v1.1.0", false},
-		{"1.1.0", "1.1.0", false},
-		{"v1.0.0", "1.1.0", true},
-		{"1.0.0", "v1.1.0", true},
-		{"v1.1.0", "1.0.0", true}, // Simple string mismatch check as implemented
+		{"v1.1.2", "1.1.2", false},
+		{"v1.1.2", "v1.1.2", false},
+		{"1.1.2", "1.1.2", false},
+		{"v1.0.0", "1.1.2", true},
+		{"1.0.0", "v1.1.2", true},
+		{"v1.1.2", "1.0.0", true}, // Simple string mismatch check as implemented
 	}
 
 	for _, tt := range tests {
@@ -29,10 +29,10 @@ func TestCleanVersion(t *testing.T) {
 		input    string
 		expected string
 	}{
-		{"v1.1.0", "1.1.0"},
-		{"V1.1.0", "1.1.0"},
-		{" 1.1.0 ", "1.1.0"},
-		{"  v1.1.0  ", "1.1.0"},
+		{"v1.1.2", "1.1.2"},
+		{"V1.1.2", "1.1.2"},
+		{" 1.1.2 ", "1.1.2"},
+		{"  v1.1.2  ", "1.1.2"},
 	}
 
 	for _, tt := range tests {

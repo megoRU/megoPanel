@@ -244,7 +244,7 @@ function Layout(properties: { children: React.ReactNode; showHeaderControls?: bo
               MegoPanel
             </span>
             <span className="h-4 w-[1px] bg-[var(--border-color)] hidden sm:block"></span>
-            <span className="text-sm text-[var(--text-muted)] font-mono hidden sm:block">v1.1.0</span>
+            <span className="text-sm text-[var(--text-muted)] font-mono hidden sm:block">v1.1.2</span>
           </div>
 
           <div className="flex items-center gap-4">
@@ -1216,7 +1216,7 @@ function Dashboard(): React.JSX.Element {
               <div className="space-y-2">
                 <p className="text-sm text-[var(--text-color)]">
                   <span className="font-semibold text-[var(--text-muted)] mr-2">{t('updateCurrent')}</span>
-                  <span className="font-mono text-zinc-400">v1.1.0</span>
+                  <span className="font-mono text-zinc-400">v1.1.2</span>
                 </p>
 
                 {/* State-driven display for latest update status */}
