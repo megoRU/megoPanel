@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	CurrentVersion = "v1.1.0"
+	CurrentVersion = "v1.1.2"
 	GitHubAPIURL   = "https://api.github.com/repos/megoRU/megoPanel/releases/latest"
 )
 
