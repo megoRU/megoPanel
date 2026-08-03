@@ -20,6 +20,10 @@ DATA_DIR="/var/lib/megopanel"
 APP_PORT="8888"
 LOG_FILE="/tmp/megopanel-install.log"
 
+# Proxy settings
+ALL_PROXY=""
+CURL_PROXY_ARGS=()
+
 # Define styling helpers
 BLUE="\033[1;34m"
 GREEN="\033[1;32m"
@@ -62,11 +66,20 @@ detect_server_ip() {
     "https://ifconfig.me/ip"
     "https://icanhazip.com"
   )
+
   local server_ip=""
   local ip_service=""
 
   for ip_service in "${ip_services[@]}"; do
-    server_ip="$(curl --fail --silent --show-error --max-time 5 "${ip_service}" 2>/dev/null | tr -d '[:space:]' || true)"
+    server_ip="$(
+      curl "${CURL_PROXY_ARGS[@]}" \
+        --fail \
+        --silent \
+        --show-error \
+        --max-time 5 \
+        "${ip_service}" 2>/dev/null | tr -d '[:space:]' || true
+    )"
+
     if [[ "${server_ip}" =~ ^[0-9A-Fa-f:.]+$ ]]; then
       echo "${server_ip}"
       return 0
@@ -91,6 +104,30 @@ DISTRIBUTION_LIKE="${ID_LIKE:-}"
 if [[ "${DISTRIBUTION_ID}" != "debian" && "${DISTRIBUTION_ID}" != "ubuntu" && "${DISTRIBUTION_LIKE}" != *"debian"* ]]; then
   echo "Unsupported distribution: ${DISTRIBUTION_ID}. Debian and Ubuntu are supported." >&2
   exit 1
+fi
+
+echo ""
+read -rp "Использовать SOCKS5-прокси? [y/N]: " USE_PROXY
+
+if [[ "$USE_PROXY" =~ ^[Yy]$ ]]; then
+    read -rp "IP/домен прокси [127.0.0.1]: " PROXY_HOST
+    read -rp "Порт прокси [1080]: " PROXY_PORT
+
+    PROXY_HOST=${PROXY_HOST:-127.0.0.1}
+    PROXY_PORT=${PROXY_PORT:-1080}
+
+    ALL_PROXY="socks5://${PROXY_HOST}:${PROXY_PORT}"
+
+    export ALL_PROXY
+    export all_proxy="$ALL_PROXY"
+    export HTTP_PROXY="$ALL_PROXY"
+    export HTTPS_PROXY="$ALL_PROXY"
+    export http_proxy="$ALL_PROXY"
+    export https_proxy="$ALL_PROXY"
+
+    CURL_PROXY_ARGS=(--proxy "$ALL_PROXY")
+
+    log_success "Используется прокси ${ALL_PROXY}"
 fi
 
 # Component Installers
@@ -148,7 +185,16 @@ install_phpmyadmin() {
   log_step "Downloading phpMyAdmin..."
   mkdir -p /var/www/phpmyadmin
   local archive_path="/tmp/phpmyadmin-5.2.1-all-languages.tar.gz"
-  curl --fail --show-error --location --connect-timeout 15 --retry 3 --retry-delay 2 --output "${archive_path}" "https://files.phpmyadmin.net/phpMyAdmin/5.2.1/phpMyAdmin-5.2.1-all-languages.tar.gz" >> "${LOG_FILE}" 2>&1
+  curl "${CURL_PROXY_ARGS[@]}" \
+    --fail \
+    --show-error \
+    --location \
+    --connect-timeout 15 \
+    --retry 3 \
+    --retry-delay 2 \
+    --output "${archive_path}" \
+    "https://files.phpmyadmin.net/phpMyAdmin/5.2.1/phpMyAdmin-5.2.1-all-languages.tar.gz" \
+    >> "${LOG_FILE}" 2>&1
   tar -xzf "${archive_path}" --strip-components=1 -C /var/www/phpmyadmin >> "${LOG_FILE}" 2>&1
   rm -f "${archive_path}"
 
