@@ -118,16 +118,12 @@ if [[ "$USE_PROXY" =~ ^[Yy]$ ]]; then
 
     ALL_PROXY="socks5://${PROXY_HOST}:${PROXY_PORT}"
 
-    export ALL_PROXY
-    export all_proxy="$ALL_PROXY"
-    export HTTP_PROXY="$ALL_PROXY"
-    export HTTPS_PROXY="$ALL_PROXY"
-    export http_proxy="$ALL_PROXY"
-    export https_proxy="$ALL_PROXY"
-
+    # Используем прокси только для curl и wget.
+    # apt, npm, go и другие утилиты работают напрямую.
     CURL_PROXY_ARGS=(--proxy "$ALL_PROXY")
+    WGET_PROXY_ARGS=(-e use_proxy=yes -e socks_proxy="$ALL_PROXY")
 
-    log_success "Используется прокси ${ALL_PROXY}"
+    log_success "Используется SOCKS5-прокси только для загрузок (${ALL_PROXY})"
 fi
 
 # Component Installers
