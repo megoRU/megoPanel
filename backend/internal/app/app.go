@@ -57,5 +57,5 @@ func (a *App) Run() error {
 
 type noopPackageManager struct{}
 
-func (n *noopPackageManager) Restart(string) error       { return nil }
-func (n *noopPackageManager) Enable(string) error        { return nil }
+func (n *noopPackageManager) Restart(string) error { return nil }
+func (n *noopPackageManager) Enable(string) error  { return nil }
