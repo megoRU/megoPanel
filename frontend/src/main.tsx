@@ -1159,7 +1159,7 @@ function Dashboard(): React.JSX.Element {
                         });
                       }}
                     >
-                      {t('open')}
+                      {t('openPhpMyAdmin')}
                     </button>
                   ) : (
                     <button

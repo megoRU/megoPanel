@@ -221,10 +221,66 @@ type InstallService struct {
 func NewInstallService(repo repository.ServiceRepository, pm platform.PackageManager, settings repository.SettingRepository) *InstallService {
 	return &InstallService{repo: repo, pm: pm, settings: settings}
 }
-func (s *InstallService) Status(name string) (*domain.ServiceState, error) { return s.repo.Get(name) }
+func isNginxInstalled() bool {
+	if _, err := os.Stat("/usr/sbin/nginx"); err == nil {
+		return true
+	}
+	if _, err := os.Stat("/usr/bin/nginx"); err == nil {
+		return true
+	}
+	if _, err := exec.LookPath("nginx"); err == nil {
+		return true
+	}
+	return false
+}
+
+func isMariaDBInstalled() bool {
+	if _, err := os.Stat("/usr/sbin/mariadbd"); err == nil {
+		return true
+	}
+	if _, err := os.Stat("/usr/sbin/mysqld"); err == nil {
+		return true
+	}
+	if _, err := exec.LookPath("mysql"); err == nil {
+		return true
+	}
+	if _, err := exec.LookPath("mariadb"); err == nil {
+		return true
+	}
+	return false
+}
+
+func isPhpMyAdminInstalled() bool {
+	if _, err := os.Stat("/var/www/phpmyadmin/config.inc.php"); err == nil {
+		return true
+	}
+	return false
+}
+
+func (s *InstallService) Status(name string) (*domain.ServiceState, error) {
+	installed := false
+	switch name {
+	case "nginx":
+		installed = isNginxInstalled()
+	case "mariadb":
+		installed = isMariaDBInstalled()
+	case "phpmyadmin":
+		installed = isPhpMyAdminInstalled()
+	}
+
+	state, err := s.repo.Get(name)
+	if err != nil {
+		state = &domain.ServiceState{Name: name, Installed: installed, UpdatedAt: time.Now()}
+	} else {
+		state.Installed = installed
+		state.UpdatedAt = time.Now()
+	}
+	_ = s.repo.Save(state)
+	return state, nil
+}
 func (s *InstallService) InstallMariaDB(remote bool, rootPassword string) (*domain.ServiceState, error) {
-	if err := s.pm.Install("mariadb-server"); err != nil {
-		return nil, err
+	if !isMariaDBInstalled() {
+		return nil, errors.New("MariaDB is not installed on the system. Please run install.sh")
 	}
 	if remote {
 		_ = os.WriteFile("/etc/mysql/mariadb.conf.d/60-megopanel.cnf", []byte("[mysqld]\nbind-address=0.0.0.0\n"), 0644)
@@ -247,8 +303,8 @@ func (s *InstallService) InstallMariaDB(remote bool, rootPassword string) (*doma
 	return state, s.repo.Save(state)
 }
 func (s *InstallService) InstallNginx() (*domain.ServiceState, error) {
-	if err := s.pm.Install("nginx"); err != nil {
-		return nil, err
+	if !isNginxInstalled() {
+		return nil, errors.New("Nginx is not installed on the system. Please run install.sh")
 	}
 	_ = os.Remove("/etc/nginx/sites-enabled/default")
 	_ = s.pm.Enable("nginx")
@@ -332,65 +388,8 @@ $cfg['Servers'][$i]['AllowNoPassword'] = false;
 }
 
 func (s *InstallService) InstallPhpMyAdmin(port string) (*domain.ServiceState, error) {
-	packages := []string{"nginx", "php-fpm", "php-mysql", "php-mbstring", "php-xml", "php-curl", "php-zip", "php-gd", "tar", "curl"}
-	if err := s.pm.InstallMany(packages); err != nil {
-		return nil, err
-	}
-
-	if err := os.RemoveAll("/var/www/phpmyadmin"); err != nil {
-		return nil, fmt.Errorf("failed to clean phpmyadmin directory: %w", err)
-	}
-	if err := os.MkdirAll("/var/www/phpmyadmin", 0755); err != nil {
-		return nil, fmt.Errorf("failed to create phpmyadmin directory: %w", err)
-	}
-	archivePath := "/tmp/phpmyadmin-5.2.1-all-languages.tar.gz"
-	downloadCmd := exec.Command("curl", "--fail", "--show-error", "--location", "--connect-timeout", "15", "--retry", "3", "--retry-delay", "2", "--output", archivePath, "https://files.phpmyadmin.net/phpMyAdmin/5.2.1/phpMyAdmin-5.2.1-all-languages.tar.gz")
-	if output, err := downloadCmd.CombinedOutput(); err != nil {
-		return nil, fmt.Errorf("failed to download phpmyadmin archive: %w: %s", err, strings.TrimSpace(string(output)))
-	}
-	defer os.Remove(archivePath)
-	extractCmd := exec.Command("tar", "-xzf", archivePath, "--strip-components=1", "-C", "/var/www/phpmyadmin")
-	if output, err := extractCmd.CombinedOutput(); err != nil {
-		return nil, fmt.Errorf("failed to extract phpmyadmin archive: %w: %s", err, strings.TrimSpace(string(output)))
-	}
-
-	blowfishSecret, err := randomToken()
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate phpmyadmin secret: %w", err)
-	}
-	if len(blowfishSecret) > 32 {
-		blowfishSecret = blowfishSecret[:32]
-	}
-
-	pmaConfig := `<?php
-$cfg['blowfish_secret'] = '` + blowfishSecret + `';
-$i = 0;
-$i++;
-
-$cfg['Servers'][$i]['auth_type'] = 'signon';
-$cfg['Servers'][$i]['SignonSession'] = 'SignonSession';
-$cfg['Servers'][$i]['SignonURL'] = 'signon.php';
-$cfg['Servers'][$i]['LogoutURL'] = 'signon.php?action=logout';
-$cfg['Servers'][$i]['host'] = 'localhost';
-$cfg['Servers'][$i]['compress'] = false;
-$cfg['Servers'][$i]['AllowNoPassword'] = false;
-`
-	if err := os.WriteFile("/var/www/phpmyadmin/config.inc.php", []byte(pmaConfig), 0644); err != nil {
-		return nil, fmt.Errorf("failed to write phpmyadmin configuration: %w", err)
-	}
-
-	autologinPHP := getAutologinPHP()
-	if err := os.WriteFile("/var/www/phpmyadmin/autologin.php", []byte(autologinPHP), 0644); err != nil {
-		return nil, fmt.Errorf("failed to write phpmyadmin autologin script: %w", err)
-	}
-
-	signonPHP := getSignonPHP(port)
-	if err := os.WriteFile("/var/www/phpmyadmin/signon.php", []byte(signonPHP), 0644); err != nil {
-		return nil, fmt.Errorf("failed to write phpmyadmin signon script: %w", err)
-	}
-	chownCmd := exec.Command("chown", "-R", "www-data:www-data", "/var/www/phpmyadmin")
-	if output, err := chownCmd.CombinedOutput(); err != nil {
-		return nil, fmt.Errorf("failed to set phpmyadmin ownership: %w: %s", err, strings.TrimSpace(string(output)))
+	if !isPhpMyAdminInstalled() {
+		return nil, errors.New("phpMyAdmin is not installed on the system. Please run install.sh")
 	}
 
 	phpServiceName := "php-fpm"
@@ -454,6 +453,11 @@ $cfg['Servers'][$i]['AllowNoPassword'] = false;
 	if err := s.pm.Restart("nginx"); err != nil {
 		return nil, err
 	}
+
+	if err := s.EnsureAutologinFiles(port); err != nil {
+		return nil, fmt.Errorf("failed to configure phpmyadmin autologin scripts: %w", err)
+	}
+
 	healthCheckCmd := exec.Command("curl", "--fail", "--silent", "--show-error", "--max-time", "10", "--output", "/dev/null", "http://127.0.0.1:8080/")
 	if output, err := healthCheckCmd.CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("phpmyadmin did not respond after installation: %w: %s", err, strings.TrimSpace(string(output)))
