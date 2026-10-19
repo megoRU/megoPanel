@@ -355,6 +355,15 @@ func normalizeBackupComponents(components []string) ([]string, error) {
 	return result, nil
 }
 
+func hasBackupComponent(components []string, component string) bool {
+	for _, selected := range components {
+		if selected == component {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *BackupService) estimateBackupBytes(ctx context.Context, components []string) (uint64, error) {
 	required := uint64(64 << 20)
 	add := func(size uint64) error {
