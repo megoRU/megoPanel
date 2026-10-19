@@ -1,23 +1,29 @@
 package http
 
 import (
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
+	"errors"
+	"net"
+	"net/http"
+	"regexp"
+	"strconv"
+	"strings"
+	"time"
+
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/gorilla/websocket"
 	"gorm.io/gorm"
-	"log"
+
 	"mego-panel/backend/internal/config"
 	"mego-panel/backend/internal/domain"
 	"mego-panel/backend/internal/platform"
 	"mego-panel/backend/internal/service"
-	"net"
-	"net/http"
-	"os"
-	"os/exec"
-	"regexp"
-	"strings"
-	"time"
 )
 
 type RouterDeps struct {
@@ -26,44 +32,50 @@ type RouterDeps struct {
 	Dashboard *service.DashboardService
 	Install   *service.InstallService
 	Update    *service.UpdateService
+	Backups   *service.BackupService
+	Websites  *service.WebsiteService
 	DB        *gorm.DB
 	Autologin *service.AutologinStore
 }
+
+var databaseNamePattern = regexp.MustCompile(`^[a-zA-Z0-9_]{1,64}$`)
 
 func NewRouter(d RouterDeps) *gin.Engine {
 	if d.Config.IsProduction() {
 		gin.SetMode(gin.ReleaseMode)
 	}
 	r := gin.New()
-	r.Use(gin.Logger(), gin.Recovery(), securityHeaders(), cors.New(cors.Config{AllowOrigins: []string{d.Config.Server.FrontendURL}, AllowCredentials: true, AllowHeaders: []string{"Content-Type", "X-CSRF-Token"}, AllowMethods: []string{"GET", "POST", "DELETE", "OPTIONS"}}))
+	r.Use(gin.Logger(), gin.Recovery(), securityHeaders(), cors.New(cors.Config{AllowOrigins: []string{d.Config.Server.FrontendURL}, AllowCredentials: true, AllowHeaders: []string{"Content-Type", "X-CSRF-Token"}, AllowMethods: []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"}}))
+	loginAttempts := newLoginLimiter(10, 15*time.Minute)
 
-	r.GET("/internal/phpmyadmin/token", func(c *gin.Context) {
-		clientIP := c.ClientIP()
-		parsedIP := net.ParseIP(clientIP)
-		isLocal := clientIP == "127.0.0.1" || clientIP == "::1" || (parsedIP != nil && parsedIP.IsLoopback())
-
-		if !isLocal {
-			logAuthAttempt(false, clientIP, "", "unauthorized access from non-localhost IP")
-			c.JSON(http.StatusForbidden, gin.H{"error": "Forbidden: access allowed only from localhost"})
+	r.POST("/internal/phpmyadmin/token", func(c *gin.Context) {
+		remoteIP := requestRemoteIP(c.Request.RemoteAddr)
+		parsedIP := net.ParseIP(remoteIP)
+		if parsedIP == nil || !parsedIP.IsLoopback() {
+			c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
 			return
 		}
-
-		token := c.Query("token")
-		if token == "" {
-			logAuthAttempt(false, clientIP, "", "missing token parameter")
-			c.JSON(http.StatusBadRequest, gin.H{"error": "missing token parameter"})
+		var req struct {
+			Token string `json:"token"`
+		}
+		if bind(c, &req) {
 			return
 		}
-
-		pmaToken, err := d.Autologin.RetrieveAndConsume(token)
+		if !regexp.MustCompile(`^[0-9a-fA-F-]{36}$`).MatchString(req.Token) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid sign-on token"})
+			return
+		}
+		if d.Autologin == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "sign-on is unavailable"})
+			return
+		}
+		pmaToken, err := d.Autologin.RetrieveAndConsume(req.Token)
 		if err != nil {
-			logAuthAttempt(false, clientIP, token, "failed to consume token: "+err.Error())
-			c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+			c.JSON(http.StatusForbidden, gin.H{"error": "sign-on token is invalid or expired"})
 			return
 		}
-
-		logAuthAttempt(true, clientIP, token, "successfully authenticated mysql user: "+pmaToken.MySQLUsername)
-
+		c.Header("Cache-Control", "no-store")
+		c.Header("Pragma", "no-cache")
 		c.JSON(http.StatusOK, gin.H{
 			"username": pmaToken.MySQLUsername,
 			"password": pmaToken.MySQLPassword,
@@ -71,28 +83,42 @@ func NewRouter(d RouterDeps) *gin.Engine {
 	})
 
 	api := r.Group("/api/v1")
+	api.Use(func(c *gin.Context) {
+		c.Header("Cache-Control", "no-store")
+		c.Next()
+	})
+	api.Use(issueCSRFCookie(d.Config))
 	api.GET("/setup/status", func(c *gin.Context) { ok, err := d.Auth.IsConfigured(); respond(c, ok, gin.H{"configured": ok}, err) })
-	api.POST("/setup/admin", func(c *gin.Context) {
+	api.POST("/setup/admin", csrfMiddleware(d.Config), func(c *gin.Context) {
 		var req struct {
-			Username string `json:"username"`
-			Password string `json:"password"`
+			Username   string `json:"username"`
+			Password   string `json:"password"`
+			SetupToken string `json:"setupToken"`
 		}
 		if bind(c, &req) {
 			return
 		}
-		if err := d.Auth.CreateAdmin(req.Username, req.Password); err != nil {
+		if err := d.Auth.CreateAdmin(req.Username, req.Password, req.SetupToken); err != nil {
 			respond(c, false, nil, err)
 			return
 		}
 		access, refresh, err := d.Auth.Login(req.Username, req.Password)
 		if err == nil {
-			setCookie(c, "access_token", access, d.Config.AccessTTL().Seconds(), d.Config.Security.CookieSecure)
-			setCookie(c, "refresh_token", refresh, d.Config.RefreshTTL().Seconds(), d.Config.Security.CookieSecure)
-			setCookie(c, "csrf_token", "megopanel-csrf", d.Config.RefreshTTL().Seconds(), false)
+			err = setAuthCookies(c, d.Config, access, refresh)
 		}
 		respond(c, false, gin.H{"ok": true}, err)
 	})
-	api.POST("/auth/login", func(c *gin.Context) {
+	api.POST("/auth/login", csrfMiddleware(d.Config), func(c *gin.Context) {
+		clientIP := requestRemoteIP(c.Request.RemoteAddr)
+		if allowed, retry := loginAttempts.allow(clientIP, time.Now()); !allowed {
+			seconds := int(retry / time.Second)
+			if retry%time.Second != 0 {
+				seconds++
+			}
+			c.Header("Retry-After", strconv.Itoa(seconds))
+			c.JSON(http.StatusTooManyRequests, gin.H{"error": "too many login attempts; try again later"})
+			return
+		}
 		var req struct {
 			Username string `json:"username"`
 			Password string `json:"password"`
@@ -102,100 +128,84 @@ func NewRouter(d RouterDeps) *gin.Engine {
 		}
 		access, refresh, err := d.Auth.Login(req.Username, req.Password)
 		if err == nil {
-			setCookie(c, "access_token", access, d.Config.AccessTTL().Seconds(), d.Config.Security.CookieSecure)
-			setCookie(c, "refresh_token", refresh, d.Config.RefreshTTL().Seconds(), d.Config.Security.CookieSecure)
-			setCookie(c, "csrf_token", "megopanel-csrf", d.Config.RefreshTTL().Seconds(), false)
+			err = setAuthCookies(c, d.Config, access, refresh)
+			loginAttempts.succeeded(clientIP)
+		} else {
+			loginAttempts.failed(clientIP, time.Now())
 		}
 		respond(c, false, gin.H{"ok": true}, err)
 	})
-	api.POST("/auth/refresh", func(c *gin.Context) {
+	api.POST("/auth/refresh", csrfMiddleware(d.Config), func(c *gin.Context) {
 		refresh, err := c.Cookie("refresh_token")
 		if err != nil || refresh == "" {
 			c.JSON(401, gin.H{"error": "missing refresh token"})
 			return
 		}
-		c.JSON(200, gin.H{"ok": true})
+		access, rotatedRefresh, err := d.Auth.Refresh(refresh)
+		if err != nil {
+			setCookie(c, "access_token", "", -1, d.Config.Security.CookieSecure)
+			setCookie(c, "refresh_token", "", -1, d.Config.Security.CookieSecure)
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "refresh token is invalid or expired"})
+			return
+		}
+		if err := setAuthCookies(c, d.Config, access, rotatedRefresh); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "could not refresh session"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"ok": true})
 	})
-	api.POST("/auth/logout", func(c *gin.Context) {
+	api.POST("/auth/logout", csrfMiddleware(d.Config), func(c *gin.Context) {
+		refresh, _ := c.Cookie("refresh_token")
+		d.Auth.RevokeRefresh(refresh)
 		setCookie(c, "access_token", "", -1, d.Config.Security.CookieSecure)
 		setCookie(c, "refresh_token", "", -1, d.Config.Security.CookieSecure)
+		c.SetCookie("csrf_token", "", -1, "/", "", d.Config.Security.CookieSecure, false)
 		c.JSON(200, gin.H{"ok": true})
 	})
 	protected := api.Group("")
-	protected.Use(authMiddleware(d.Auth), csrfMiddleware())
+	protected.Use(authMiddleware(d.Auth), csrfMiddleware(d.Config))
 	protected.GET("/auth/me", func(c *gin.Context) { c.JSON(200, gin.H{"authenticated": true}) })
 	protected.GET("/dashboard", func(c *gin.Context) { c.JSON(200, d.Dashboard.Stats()) })
 	protected.GET("/websites", func(c *gin.Context) {
-		var sites []domain.Website
-		if err := d.DB.Find(&sites).Error; err != nil {
-			c.JSON(400, gin.H{"error": err.Error()})
-			return
-		}
-		c.JSON(200, sites)
+		sites, err := d.Websites.List()
+		respond(c, false, sites, err)
 	})
 	protected.POST("/websites", func(c *gin.Context) {
 		var req struct {
 			Domain    string `json:"domain"`
 			IPAddress string `json:"ipAddress"`
 		}
-		if err := c.ShouldBindJSON(&req); err != nil {
-			c.JSON(400, gin.H{"error": err.Error()})
+		if bind(c, &req) {
 			return
 		}
-		if net.ParseIP(req.IPAddress) == nil {
-			c.JSON(400, gin.H{"error": "valid IP address is required"})
-			return
-		}
-
-		// Check for duplicate domain
-		var count int64
-		if err := d.DB.Model(&domain.Website{}).Where("domain = ?", req.Domain).Count(&count).Error; err != nil {
-			c.JSON(400, gin.H{"error": err.Error()})
-			return
-		}
-		if count > 0 {
-			c.JSON(400, gin.H{"error": "Website with this domain is already added"})
-			return
-		}
-
-		path := "/var/www/" + req.Domain
-		site := domain.Website{Domain: req.Domain, IPAddress: req.IPAddress, Path: path}
-		if err := d.DB.Create(&site).Error; err != nil {
-			c.JSON(400, gin.H{"error": err.Error()})
-			return
-		}
-		c.JSON(200, site)
+		site, err := d.Websites.Create(c.Request.Context(), req.Domain, req.IPAddress)
+		respond(c, false, site, err)
 	})
 	protected.DELETE("/websites/:id", func(c *gin.Context) {
-		id := c.Param("id")
-		if err := d.DB.Delete(&domain.Website{}, id).Error; err != nil {
-			c.JSON(400, gin.H{"error": err.Error()})
+		id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+		if err != nil || id == 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid website id"})
+			return
+		}
+		if err := d.Websites.Delete(c.Request.Context(), id); err != nil {
+			if err.Error() == "website not found" {
+				c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+				return
+			}
+			respond(c, false, nil, err)
 			return
 		}
 		c.JSON(200, gin.H{"ok": true})
 	})
 	protected.GET("/databases", func(c *gin.Context) {
-		var passwordSetting domain.Setting
-		var rootPassword string
-		if err := d.DB.First(&passwordSetting, "key = ?", "mariadb_root_password").Error; err == nil {
-			rootPassword = passwordSetting.Value
-		}
-
-		var args []string
-		if rootPassword != "" {
-			args = append(args, "-u", "root", "-p"+rootPassword, "-N", "-e", "SHOW DATABASES;")
-		} else {
-			args = append(args, "-u", "root", "-N", "-e", "SHOW DATABASES;")
-		}
-
-		cmd := exec.Command("mysql", args...)
-		output, err := cmd.Output()
+		password, err := panelMariaDBPassword(d.DB)
 		if err != nil {
-			cmd = exec.Command("mariadb", args...)
-			output, err = cmd.Output()
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "panel database account is not configured"})
+			return
 		}
+		output, err := platform.MariaDBQuery(c.Request.Context(), "megopanel", password, "SHOW DATABASES;")
 		if err != nil {
-			c.JSON(400, gin.H{"error": "failed to list databases: " + err.Error()})
+			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to list databases"})
 			return
 		}
 
@@ -206,7 +216,7 @@ func NewRouter(d RouterDeps) *gin.Engine {
 			if db == "" {
 				continue
 			}
-			if db == "information_schema" || db == "mysql" || db == "performance_schema" || db == "sys" || db == "test" || db == "tmp" {
+			if isProtectedMariaDBDatabase(db) {
 				continue
 			}
 			dbs = append(dbs, db)
@@ -220,57 +230,55 @@ func NewRouter(d RouterDeps) *gin.Engine {
 			Charset  string `json:"charset"`
 			Password string `json:"password"`
 		}
-		if err := c.ShouldBindJSON(&req); err != nil {
-			c.JSON(400, gin.H{"error": err.Error()})
+		if bind(c, &req) {
 			return
 		}
 
-		if req.Name == "" {
-			c.JSON(400, gin.H{"error": "Database name cannot be empty"})
-			return
-		}
-		matched, _ := regexp.MatchString("^[a-zA-Z0-9_]+$", req.Name)
-		if !matched {
-			c.JSON(400, gin.H{"error": "Database name can only contain letters, numbers, and underscores"})
+		if !databaseNamePattern.MatchString(req.Name) || isProtectedMariaDBDatabase(req.Name) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid or protected database name"})
 			return
 		}
 
 		charset := "utf8"
+		if req.Charset != "" && req.Charset != "utf8" && req.Charset != "utf8mb4" && req.Charset != "cp1251" && req.Charset != "latin1" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported database character set"})
+			return
+		}
 		if req.Charset == "utf8mb4" || req.Charset == "cp1251" || req.Charset == "latin1" {
 			charset = req.Charset
 		}
+		if len(req.Password) > 0 && (len(req.Password) < 12 || len(req.Password) > 256) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "database password must contain 12 to 256 bytes"})
+			return
+		}
 
+		password, err := panelMariaDBPassword(d.DB)
+		if err != nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "panel database account is not configured"})
+			return
+		}
 		createCmd := "CREATE DATABASE `" + req.Name + "` CHARACTER SET " + charset + ";"
 		if req.Password != "" {
-			escapedPassword := strings.ReplaceAll(req.Password, "'", "\\'")
-			createCmd += " CREATE USER IF NOT EXISTS '" + req.Name + "'@'localhost' IDENTIFIED BY '" + escapedPassword + "';"
+			passwordLiteral, err := platform.MariaDBStringLiteral(req.Password)
+			if err != nil {
+				c.JSON(400, gin.H{"error": "invalid database password"})
+				return
+			}
+			account := "'" + req.Name + "'@'localhost'"
+			createCmd += " CREATE USER IF NOT EXISTS " + account + " IDENTIFIED VIA mysql_native_password USING PASSWORD(" + passwordLiteral + ");"
+			createCmd += " ALTER USER " + account + " IDENTIFIED VIA mysql_native_password USING PASSWORD(" + passwordLiteral + ");"
 			createCmd += " GRANT ALL PRIVILEGES ON `" + req.Name + "`.* TO '" + req.Name + "'@'localhost';"
 			createCmd += " FLUSH PRIVILEGES;"
 		}
-
-		var passwordSetting domain.Setting
-		var rootPassword string
-		if err := d.DB.First(&passwordSetting, "key = ?", "mariadb_root_password").Error; err == nil {
-			rootPassword = passwordSetting.Value
-		}
-
-		var args []string
-		if rootPassword != "" {
-			args = append(args, "-u", "root", "-p"+rootPassword, "-e", createCmd)
-		} else {
-			args = append(args, "-u", "root", "-e", createCmd)
-		}
-
-		cmd := exec.Command("mysql", args...)
-		if err := cmd.Run(); err != nil {
-			cmd = exec.Command("mariadb", args...)
-			if err := cmd.Run(); err != nil {
-				c.JSON(400, gin.H{"error": "failed to create database: " + err.Error()})
-				return
-			}
+		if _, err := platform.MariaDBQuery(c.Request.Context(), "megopanel", password, createCmd); err != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to create database"})
+			return
 		}
 		if req.Password != "" {
-			_ = d.DB.Save(&domain.Setting{Key: "db_password_" + req.Name, Value: req.Password})
+			if err := d.DB.Save(&domain.Setting{Key: "db_password_" + req.Name, Value: req.Password}).Error; err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "database created but credentials could not be saved"})
+				return
+			}
 		}
 		c.JSON(200, gin.H{"ok": true, "name": req.Name})
 	})
@@ -278,159 +286,159 @@ func NewRouter(d RouterDeps) *gin.Engine {
 	protected.DELETE("/databases/:name", func(c *gin.Context) {
 		name := c.Param("name")
 
-		matched, _ := regexp.MatchString("^[a-zA-Z0-9_]+$", name)
-		if !matched {
+		if !databaseNamePattern.MatchString(name) || isProtectedMariaDBDatabase(name) {
 			c.JSON(400, gin.H{"error": "invalid database name"})
 			return
 		}
-
-		dropCmd := "DROP DATABASE `" + name + "`; DROP USER IF EXISTS '" + name + "'@'localhost';"
-
-		var passwordSetting domain.Setting
-		var rootPassword string
-		if err := d.DB.First(&passwordSetting, "key = ?", "mariadb_root_password").Error; err == nil {
-			rootPassword = passwordSetting.Value
+		password, err := panelMariaDBPassword(d.DB)
+		if err != nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "panel database account is not configured"})
+			return
 		}
-
-		var args []string
-		if rootPassword != "" {
-			args = append(args, "-u", "root", "-p"+rootPassword, "-e", dropCmd)
-		} else {
-			args = append(args, "-u", "root", "-e", dropCmd)
+		if _, err := platform.MariaDBQuery(c.Request.Context(), "megopanel", password, "DROP DATABASE IF EXISTS `"+name+"`;"); err != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to delete database"})
+			return
 		}
-
-		cmd := exec.Command("mysql", args...)
-		if err := cmd.Run(); err != nil {
-			cmd = exec.Command("mariadb", args...)
-			if err := cmd.Run(); err != nil {
-				c.JSON(400, gin.H{"error": "failed to delete database: " + err.Error()})
-				return
-			}
+		_, accountErr := platform.MariaDBQuery(c.Request.Context(), "megopanel", password, "DROP USER IF EXISTS '"+name+"'@'localhost';")
+		if err := d.DB.Delete(&domain.Setting{}, "key = ?", "db_password_"+name).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "database deleted but saved credentials could not be removed"})
+			return
 		}
-		_ = d.DB.Delete(&domain.Setting{}, "key = ?", "db_password_"+name)
+		if accountErr != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": "database was deleted but its database account could not be removed"})
+			return
+		}
 		c.JSON(200, gin.H{"ok": true})
 	})
 
-	protected.POST("/databases/autologin", func(c *gin.Context) {
+	issueAutologin := func(c *gin.Context) {
 		var req struct {
 			DB string `json:"db"`
 		}
-		if err := c.ShouldBindJSON(&req); err != nil {
-			c.JSON(400, gin.H{"error": err.Error()})
+		if bind(c, &req) {
 			return
 		}
-
-		// Verify phpmyadmin directory exists
-		if _, err := os.Stat("/var/www/phpmyadmin"); os.IsNotExist(err) {
-			c.JSON(400, gin.H{"error": "phpMyAdmin is not installed"})
+		if req.DB != "" && (!databaseNamePattern.MatchString(req.DB) || isProtectedMariaDBDatabase(req.DB)) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid database name"})
 			return
 		}
-
-		// Extract user ID from JWT
-		userID := extractUserID(c, d.Config.Security.JWTSecret)
-
-		// Get root password
+		state, err := d.Install.Status("phpmyadmin")
+		if err != nil || !state.Installed {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "phpMyAdmin is not installed"})
+			return
+		}
+		dbUser := "megopanel"
 		var passwordSetting domain.Setting
-		var rootPassword string
-		if err := d.DB.First(&passwordSetting, "key = ?", "mariadb_root_password").Error; err == nil {
-			rootPassword = passwordSetting.Value
-		}
-
-		dbUser := "root"
-		dbPassword := rootPassword
+		settingKey := "mariadb_admin_password"
 		if req.DB != "" {
-			var dbPasswordSetting domain.Setting
-			if err := d.DB.First(&dbPasswordSetting, "key = ?", "db_password_"+req.DB).Error; err == nil {
-				dbUser = req.DB
-				dbPassword = dbPasswordSetting.Value
-			}
+			dbUser = req.DB
+			settingKey = "db_password_" + req.DB
 		}
-
-		// Generate UUIDv7
+		credentialErr := d.DB.First(&passwordSetting, "key = ?", settingKey).Error
+		if req.DB != "" && (credentialErr != nil || passwordSetting.Value == "") {
+			dbUser = "megopanel"
+			settingKey = "mariadb_admin_password"
+			passwordSetting = domain.Setting{}
+			credentialErr = d.DB.First(&passwordSetting, "key = ?", settingKey).Error
+		}
+		if credentialErr != nil || passwordSetting.Value == "" {
+			c.JSON(http.StatusNotFound, gin.H{"error": "database credentials are not configured"})
+			return
+		}
+		if _, err := platform.MariaDBQuery(c.Request.Context(), dbUser, passwordSetting.Value, "SELECT 1;"); err != nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "MariaDB credentials are no longer valid; configure database access again"})
+			return
+		}
+		if d.Autologin == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "phpMyAdmin sign-on is unavailable"})
+			return
+		}
 		token, err := platform.NewUUIDv7()
 		if err != nil {
-			c.JSON(500, gin.H{"error": "failed to generate token: " + err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create sign-on request"})
 			return
 		}
-
 		now := time.Now()
-		expiresAt := now.Add(15 * time.Second)
-
+		expiresAt := now.Add(time.Minute)
+		userID := extractUserID(c, d.Config.Security.JWTSecret)
 		d.Autologin.Save(token, &service.PMAAutologinToken{
 			UserID:        userID,
 			MySQLUsername: dbUser,
-			MySQLPassword: dbPassword,
+			MySQLPassword: passwordSetting.Value,
 			CreatedAt:     now,
 			ExpiresAt:     expiresAt,
 		})
-
-		c.JSON(200, gin.H{"token": token, "db": req.DB})
-	})
-
-	protected.POST("/phpmyadmin/autologin", func(c *gin.Context) {
-		var req struct {
-			DB string `json:"db"`
-		}
-		if err := c.ShouldBindJSON(&req); err != nil {
-			c.JSON(400, gin.H{"error": err.Error()})
-			return
-		}
-
-		// Verify phpmyadmin directory exists
-		if _, err := os.Stat("/var/www/phpmyadmin"); os.IsNotExist(err) {
-			c.JSON(400, gin.H{"error": "phpMyAdmin is not installed"})
-			return
-		}
-
-		// Extract user ID from JWT
-		userID := extractUserID(c, d.Config.Security.JWTSecret)
-
-		// Get root password
-		var passwordSetting domain.Setting
-		var rootPassword string
-		if err := d.DB.First(&passwordSetting, "key = ?", "mariadb_root_password").Error; err == nil {
-			rootPassword = passwordSetting.Value
-		}
-
-		dbUser := "root"
-		dbPassword := rootPassword
-		if req.DB != "" {
-			var dbPasswordSetting domain.Setting
-			if err := d.DB.First(&dbPasswordSetting, "key = ?", "db_password_"+req.DB).Error; err == nil {
-				dbUser = req.DB
-				dbPassword = dbPasswordSetting.Value
+		c.Header("Cache-Control", "no-store")
+		c.JSON(http.StatusOK, gin.H{"url": "/phpmyadmin/signon.php#" + token})
+	}
+	protected.POST("/databases/autologin", issueAutologin)
+	protected.POST("/phpmyadmin/autologin", issueAutologin)
+	if d.Backups != nil {
+		protected.GET("/backups/settings", func(c *gin.Context) {
+			settings, err := d.Backups.Settings()
+			respond(c, false, settings, err)
+		})
+		protected.PUT("/backups/settings", func(c *gin.Context) {
+			var request service.BackupSettings
+			if bind(c, &request) {
+				return
 			}
-		}
-
-		// Generate UUIDv7
-		token, err := platform.NewUUIDv7()
-		if err != nil {
-			c.JSON(500, gin.H{"error": "failed to generate token: " + err.Error()})
-			return
-		}
-
-		now := time.Now()
-		expiresAt := now.Add(15 * time.Second)
-
-		d.Autologin.Save(token, &service.PMAAutologinToken{
-			UserID:        userID,
-			MySQLUsername: dbUser,
-			MySQLPassword: dbPassword,
-			CreatedAt:     now,
-			ExpiresAt:     expiresAt,
+			settings, err := d.Backups.UpdateSettings(request)
+			respond(c, false, settings, err)
 		})
-
-		c.JSON(200, gin.H{
-			"url": "/phpmyadmin/signon.php?token=" + token,
+		protected.GET("/backups", func(c *gin.Context) {
+			backups, err := d.Backups.List()
+			respond(c, false, backups, err)
 		})
-	})
+		protected.GET("/backups/operations", func(c *gin.Context) {
+			operations, err := d.Backups.Operations()
+			respond(c, false, operations, err)
+		})
+		protected.POST("/backups", func(c *gin.Context) {
+			var request service.BackupOptions
+			if bind(c, &request) {
+				return
+			}
+			backup, err := d.Backups.Create(c.Request.Context(), request)
+			respond(c, false, backup, err)
+		})
+		protected.GET("/backups/:id/download", func(c *gin.Context) {
+			path, err := d.Backups.DownloadPath(c.Param("id"))
+			if err != nil {
+				respond(c, false, nil, err)
+				return
+			}
+			c.FileAttachment(path, c.Param("id")+".zip")
+		})
+		protected.POST("/backups/:id/verify", func(c *gin.Context) {
+			backup, err := d.Backups.Verify(c.Param("id"))
+			respond(c, false, backup, err)
+		})
+		protected.DELETE("/backups/:id", func(c *gin.Context) {
+			respond(c, false, gin.H{"ok": true}, d.Backups.Delete(c.Param("id")))
+		})
+		protected.POST("/backups/:id/restore", func(c *gin.Context) {
+			var request struct {
+				Confirm bool `json:"confirm"`
+			}
+			if bind(c, &request) {
+				return
+			}
+			if !request.Confirm {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "restore confirmation is required"})
+				return
+			}
+			result, err := d.Backups.Restore(c.Request.Context(), c.Param("id"))
+			respond(c, false, result, err)
+		})
+	}
 
 	protected.GET("/update/status", func(c *gin.Context) {
-		status, err := d.Update.CheckUpdate()
+		status, err := d.Update.CheckUpdate(c.Request.Context())
 		respond(c, false, status, err)
 	})
 	protected.POST("/update/upgrade", func(c *gin.Context) {
-		err := d.Update.Upgrade()
+		err := d.Update.Upgrade(c.Request.Context())
 		if err != nil {
 			c.JSON(400, gin.H{"error": err.Error()})
 			return
@@ -443,8 +451,14 @@ func NewRouter(d RouterDeps) *gin.Engine {
 			RemoteAccess bool   `json:"remoteAccess"`
 			RootPassword string `json:"rootPassword"`
 		}
-		_ = c.ShouldBindJSON(&req)
-		state, err := d.Install.InstallMariaDB(req.RemoteAccess, req.RootPassword)
+		if bind(c, &req) {
+			return
+		}
+		if len(req.RootPassword) > 1024 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "database password is too long"})
+			return
+		}
+		state, err := d.Install.InstallMariaDB(c.Request.Context(), req.RemoteAccess, req.RootPassword)
 		respond(c, false, state, err)
 	})
 	protected.POST("/install/nginx", func(c *gin.Context) { state, err := d.Install.InstallNginx(); respond(c, false, state, err) })
@@ -457,7 +471,7 @@ func NewRouter(d RouterDeps) *gin.Engine {
 		respond(c, false, state, err)
 	})
 	protected.GET("/ws", func(c *gin.Context) {
-		upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+		upgrader := websocket.Upgrader{}
 		conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 		if err != nil {
 			return
@@ -468,6 +482,10 @@ func NewRouter(d RouterDeps) *gin.Engine {
 	r.Static("/assets", "templates/frontend/assets")
 	r.StaticFile("/favicon.ico", "templates/frontend/favicon.ico")
 	r.NoRoute(func(c *gin.Context) {
+		if strings.HasPrefix(c.Request.URL.Path, "/api/") || strings.HasPrefix(c.Request.URL.Path, "/internal/") {
+			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+			return
+		}
 		c.File("templates/frontend/index.html")
 	})
 	return r
@@ -476,7 +494,10 @@ func securityHeaders() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Header("X-Frame-Options", "DENY")
 		c.Header("X-Content-Type-Options", "nosniff")
-		c.Header("Referrer-Policy", "strict-origin-when-cross-origin")
+		c.Header("Referrer-Policy", "no-referrer")
+		c.Header("Content-Security-Policy", "default-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws: wss:")
+		c.Header("Cross-Origin-Resource-Policy", "same-origin")
+		c.Header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
 		c.Next()
 	}
 }
@@ -490,15 +511,29 @@ func authMiddleware(a *service.AuthService) gin.HandlerFunc {
 		c.Next()
 	}
 }
-func csrfMiddleware() gin.HandlerFunc {
+func csrfMiddleware(cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if c.Request.Method == "GET" {
+		if c.Request.Method == http.MethodGet || c.Request.Method == http.MethodHead || c.Request.Method == http.MethodOptions {
 			c.Next()
 			return
 		}
-		if c.GetHeader("X-CSRF-Token") != "megopanel-csrf" {
+		cookie, err := c.Cookie("csrf_token")
+		header := c.GetHeader("X-CSRF-Token")
+		if err != nil || !validCSRFCookie(cookie, cfg.Security.CSRFSecret) || len(cookie) != len(header) || subtle.ConstantTimeCompare([]byte(cookie), []byte(header)) != 1 {
 			c.AbortWithStatusJSON(403, gin.H{"error": "csrf validation failed"})
 			return
+		}
+		c.Next()
+	}
+}
+func issueCSRFCookie(cfg *config.Config) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if token, err := c.Cookie("csrf_token"); err != nil || !validCSRFCookie(token, cfg.Security.CSRFSecret) {
+			csrf, err := newCSRFCookie(cfg.Security.CSRFSecret)
+			if err == nil {
+				c.SetSameSite(http.SameSiteLaxMode)
+				c.SetCookie("csrf_token", csrf, int(cfg.RefreshTTL().Seconds()), "/", "", cfg.Security.CookieSecure, false)
+			}
 		}
 		c.Next()
 	}
@@ -507,9 +542,55 @@ func setCookie(c *gin.Context, n, v string, age float64, secure bool) {
 	c.SetSameSite(http.SameSiteLaxMode)
 	c.SetCookie(n, v, int(age), "/", "", secure, true)
 }
+func setAuthCookies(c *gin.Context, cfg *config.Config, access, refresh string) error {
+	csrf, err := newCSRFCookie(cfg.Security.CSRFSecret)
+	if err != nil {
+		return err
+	}
+	setCookie(c, "access_token", access, cfg.AccessTTL().Seconds(), cfg.Security.CookieSecure)
+	setCookie(c, "refresh_token", refresh, cfg.RefreshTTL().Seconds(), cfg.Security.CookieSecure)
+	c.SetSameSite(http.SameSiteLaxMode)
+	c.SetCookie("csrf_token", csrf, int(cfg.RefreshTTL().Seconds()), "/", "", cfg.Security.CookieSecure, false)
+	return nil
+}
+
+func newCSRFCookie(secret string) (string, error) {
+	if len(secret) < 32 {
+		return "", errors.New("CSRF signing secret must contain at least 32 bytes")
+	}
+	nonce := make([]byte, 32)
+	if _, err := rand.Read(nonce); err != nil {
+		return "", err
+	}
+	nonceText := hex.EncodeToString(nonce)
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = mac.Write([]byte(nonceText))
+	return nonceText + "." + hex.EncodeToString(mac.Sum(nil)), nil
+}
+
+func validCSRFCookie(token, secret string) bool {
+	if len(secret) < 32 {
+		return false
+	}
+	parts := strings.Split(token, ".")
+	if len(parts) != 2 || len(parts[0]) != 64 || len(parts[1]) != 64 {
+		return false
+	}
+	if _, err := hex.DecodeString(parts[0]); err != nil {
+		return false
+	}
+	suppliedMAC, err := hex.DecodeString(parts[1])
+	if err != nil {
+		return false
+	}
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = mac.Write([]byte(parts[0]))
+	return hmac.Equal(suppliedMAC, mac.Sum(nil))
+}
 func bind(c *gin.Context, target interface{}) bool {
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 1<<20)
 	if err := c.ShouldBindJSON(target); err != nil {
-		c.JSON(400, gin.H{"error": err.Error()})
+		c.JSON(400, gin.H{"error": "invalid request body"})
 		return true
 	}
 	return false
@@ -539,10 +620,30 @@ func extractUserID(c *gin.Context, jwtSecret string) string {
 	}
 	return "unknown"
 }
-func logAuthAttempt(success bool, ip, token, details string) {
-	if success {
-		log.Printf("[PMA-SIGNON-SUCCESS] IP: %s, Token: %s, Details: %s", ip, token, details)
-	} else {
-		log.Printf("[PMA-SIGNON-FAILED] IP: %s, Token: %s, Details: %s", ip, token, details)
+
+func requestRemoteIP(remoteAddr string) string {
+	if host, _, err := net.SplitHostPort(remoteAddr); err == nil {
+		return strings.Trim(host, "[]")
 	}
+	return strings.Trim(remoteAddr, "[]")
+}
+
+func isProtectedMariaDBDatabase(name string) bool {
+	switch strings.ToLower(name) {
+	case "information_schema", "mysql", "performance_schema", "sys":
+		return true
+	default:
+		return false
+	}
+}
+
+func panelMariaDBPassword(db *gorm.DB) (string, error) {
+	var setting domain.Setting
+	if err := db.First(&setting, "key = ?", "mariadb_admin_password").Error; err != nil {
+		return "", err
+	}
+	if setting.Value == "" {
+		return "", gorm.ErrRecordNotFound
+	}
+	return setting.Value, nil
 }

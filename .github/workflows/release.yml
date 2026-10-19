@@ -25,7 +25,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24.x'
+          go-version: '1.27.x'
           cache-dependency-path: backend/go.sum
 
       - name: Set up Node.js
@@ -35,7 +35,7 @@ jobs:
 
       - name: Install Frontend Dependencies
         working-directory: frontend
-        run: npm ci || npm install
+        run: npm ci
 
       - name: Build Frontend
         working-directory: frontend
@@ -72,11 +72,14 @@ jobs:
 
           # Package it up
           tar -czf megopanel.tar.gz -C megopanel-release .
+          sha256sum megopanel.tar.gz > megopanel.tar.gz.sha256
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: megopanel.tar.gz
+          files: |
+            megopanel.tar.gz
+            megopanel.tar.gz.sha256
           tag_name: ${{ github.ref_type == 'tag' && github.ref_name || 'latest' }}
           draft: ${{ github.ref_type != 'tag' }}
           prerelease: ${{ github.ref_type != 'tag' }}

@@ -1,157 +1,100 @@
 # MegoPanel
 
-Native Debian/Ubuntu server management panel written in Go with a React frontend.
+MegoPanel is a native server management panel with a Go/Gin API and a React + TypeScript interface. It installs as a systemd service and manages its own SQLite state, MariaDB access, phpMyAdmin sign-on, updates, and backups.
 
-## Features
+## Supported systems
 
-- ⚡ Native installation (no Docker)
-- 🐹 Go + Gin backend
-- ⚛️ React + TypeScript frontend
-- 🔐 JWT authentication + CSRF protection
-- 🌐 English & Russian
-- 🚀 One-command installation
-- 🖥️ systemd service
+- Debian 12 or newer
+- Ubuntu 22.04 or newer
+- Root access and an internet connection during installation
 
-## Requirements
-
-- Debian 12+/Ubuntu 22.04+
-- Root access
+The installer builds the application on the Linux server and installs its Linux dependencies. Nginx, MariaDB, and phpMyAdmin can be selected during setup.
 
 ## Install
 
 ```bash
-sudo apt-get update
-sudo apt-get install -y ca-certificates curl build-essential sqlite3 nodejs npm golang rsync
-
-git clone https://github.com/megoRU/megoPanel
+git clone https://github.com/megoRU/megoPanel.git
 cd megoPanel
 sudo scripts/install-debian.sh
 ```
 
-Open:
+Open the address printed at the end of installation. The installer prints a one-time administrator setup token. Enter it on the first-run setup page along with the administrator name and password. The token is stored in `/etc/megopanel/setup.token` with root-only access and removed after successful setup.
 
-```
-http://SERVER_IP:8888
-```
-
----
-
-<details>
-<summary><b>Development</b></summary>
-
-### Backend
+The initial address uses HTTP. Keep it on a trusted private network until you configure HTTPS. For TLS termination, set `security.cookie_secure: true` in `/etc/megopanel/config.yaml`, configure a reverse proxy with the panel's configured `server.address` as its upstream, then restart the service:
 
 ```bash
-cd backend
-go run ./cmd/server
+sudo systemctl restart megopanel
 ```
 
-### Frontend
+Do not expose the panel or phpMyAdmin directly to the public internet without TLS and an appropriate access policy.
 
-```bash
-cd frontend
-npm install
-npm run dev
-```
+## MariaDB and phpMyAdmin
 
-Vite runs on **8889** and proxies `/api` to **8888**.
+Install MariaDB from the installer or install it separately first. In the Databases view, configure panel access with the current MariaDB root password, or leave the password blank when local Unix socket authentication is available. MegoPanel does not change the MariaDB root password. It provisions a separate `megopanel` account and keeps its credential in the panel's protected SQLite database.
 
-</details>
+phpMyAdmin sign-on uses a short-lived, single-use token passed in the URL fragment, then exchanges it through a local server request. The database password is not put in the URL. If sign-on fails, check that MariaDB is running and that the phpMyAdmin configuration uses the MegoPanel sign-on settings; the panel re-applies its managed sign-on files when it starts.
 
----
+The Websites view creates a static Nginx virtual host and a starter `index.html` under `/var/www/<domain>`. The domain must resolve to this server. Removing a site disables its MegoPanel-managed Nginx config and removes its panel record, while preserving the website files.
 
-<details>
-<summary><b>Build</b></summary>
+## Backups
 
-Backend
+The Backups view supports manual and daily scheduled archives. Select panel data and configuration, MariaDB application databases, and/or website files. MariaDB is saved as a consistent logical dump, not by archiving its live data directory. Archives have a SHA-256 sidecar, are created with root-only permissions, and can be verified, downloaded, deleted, or restored. Restore checks the archive and version, creates a pre-restore backup, and reports which components were restored.
 
-```bash
-cd backend
-go build -trimpath -ldflags="-s -w" -o megopanel ./cmd/server
-```
+Automatic backups use the server's local time. Configure the component set, hour, storage directory, maximum number of archives, and age limit in the Backups view. Storage is restricted to `/var/lib/megopanel/backups` and `/var/backups/megopanel` (including subdirectories).
 
-Frontend
+Archives are **not encrypted** and stay on the server by default. A backup on the same disk does not protect against server or disk loss; download copies or move them to separately secured external storage. Website restore overwrites matching archived files and leaves files absent from the archive in place. phpMyAdmin application files are excluded.
 
-```bash
-cd frontend
-npm install
-npm run build
-```
+## Updates and diagnostics
 
-</details>
-
----
-
-<details>
-<summary><b>Configuration</b></summary>
-
-Production config:
-
-```yaml
-environment: production
-
-security:
-  jwt_secret: "..."
-  csrf_secret: "..."
-  cookie_secure: true
-```
-
-</details>
-
----
-
-<details>
-<summary><b>systemd</b></summary>
+Updates are downloaded from GitHub releases only after the version and SHA-256 sidecar are checked. To inspect the service:
 
 ```bash
 sudo systemctl status megopanel
-sudo systemctl restart megopanel
 sudo journalctl -u megopanel -f
 ```
 
-</details>
+The panel keeps recent backup operation results in the Backups view. Installer output and package diagnostics are written to `/tmp/megopanel-install.log`.
 
----
-
-<details>
-<summary><b>API</b></summary>
-
-All endpoints are under:
-
-```
-/api/v1
-```
-
-Examples:
-
-- `/setup/status`
-- `/setup/admin`
-- `/auth/login`
-- `/auth/logout`
-- `/auth/me`
-- `/dashboard`
-- `/install/mariadb`
-- `/install/nginx`
-- `/ws`
-
-</details>
-
----
-
-<details>
-<summary><b>Complete removal</b></summary>
+If an update leaves the service unable to start, the previous binary and templates are kept beside the live files. After confirming both rollback files exist, restore them and restart:
 
 ```bash
-cd megoPanel
+sudo systemctl stop megopanel
+sudo cp /usr/local/bin/megopanel.previous /usr/local/bin/megopanel
+sudo rm -rf /opt/megopanel/backend/templates
+sudo mv /opt/megopanel/backend/templates.previous /opt/megopanel/backend/templates
+sudo systemctl start megopanel
+```
+
+## Development
+
+Backend:
+
+```bash
+cd backend
+go test ./...
+go vet ./...
+go run ./cmd/server
+```
+
+Frontend:
+
+```bash
+cd frontend
+npm ci
+npm run build
+npm run dev
+```
+
+The development frontend runs on port 8889 and proxies API requests to port 8888. Development configuration must use random JWT and CSRF secrets of at least 32 bytes; do not use the sample placeholders.
+
+## Remove
+
+```bash
 sudo scripts/uninstall-debian.sh
 ```
 
-</details>
-
----
+The uninstaller asks before removing the application. It preserves `/etc/megopanel` and `/var/lib/megopanel` unless you type `DELETE` at the data-removal prompt. Backups in `/var/backups/megopanel` are always preserved. It leaves Nginx, MariaDB, phpMyAdmin, website files, and their data in place.
 
 ## License
 
-This project is licensed under the **GNU General Public License v3.0**.
-
-See the [LICENSE](https://github.com/megoRU/megoPanel/blob/main/LICENSE) file for details.
+GNU General Public License v3.0. See [LICENSE](LICENSE).

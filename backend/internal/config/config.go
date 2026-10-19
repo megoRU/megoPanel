@@ -1,9 +1,12 @@
 package config
 
 import (
-	"gopkg.in/yaml.v3"
+	"errors"
 	"os"
+	"strings"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 type Config struct {
@@ -41,6 +44,18 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.Database.Path == "" {
 		cfg.Database.Path = "panel.db"
+	}
+	if cfg.Security.AccessTTLMinutes <= 0 {
+		cfg.Security.AccessTTLMinutes = 15
+	}
+	if cfg.Security.RefreshTTLHours <= 0 {
+		cfg.Security.RefreshTTLHours = 168
+	}
+	if len(cfg.Security.JWTSecret) < 32 || strings.Contains(strings.ToLower(cfg.Security.JWTSecret), "change-me") {
+		return nil, errors.New("security.jwt_secret must be set to a random value of at least 32 bytes")
+	}
+	if len(cfg.Security.CSRFSecret) < 32 || strings.Contains(strings.ToLower(cfg.Security.CSRFSecret), "change-me") {
+		return nil, errors.New("security.csrf_secret must be set to a random value of at least 32 bytes")
 	}
 	return &cfg, nil
 }
