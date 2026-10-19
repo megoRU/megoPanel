@@ -855,7 +855,7 @@ function Onboarding(): React.JSX.Element {
                   ) : onboardingMariaDbStatusQuery.data?.installed === false ? (
                     <p className="text-xs text-[var(--text-muted)]">{t('mariadbNeedsInstaller')}</p>
                   ) : null}
-                  {installMariaDbMutation.error ? <p className="text-xs font-semibold text-rose-500">{installMariaDbMutation.error?.response?.data?.error || t('databaseConfigurationFailed')}</p> : null}
+                  {installMariaDbMutation.error ? <p className="text-xs font-semibold text-rose-500">{apiErrorMessage(installMariaDbMutation.error, t('databaseConfigurationFailed'))}</p> : null}
                 </div>
               </div>
 
@@ -1312,7 +1312,7 @@ function Dashboard(): React.JSX.Element {
                     {installMariaDbMutation.isPending ? t('installing') : t('configureMariaDb')}
                   </button>
                 </div>
-                {installMariaDbMutation.error ? <p className="text-sm text-rose-500">{installMariaDbMutation.error?.response?.data?.error || t('databaseConfigurationFailed')}</p> : null}
+                {installMariaDbMutation.error ? <p className="text-sm text-rose-500">{apiErrorMessage(installMariaDbMutation.error, t('databaseConfigurationFailed'))}</p> : null}
                 {installMariaDbMutation.isSuccess ? <p className="text-sm text-emerald-400">{t('databaseConfigured')}</p> : null}
               </section>
               <div className="grid gap-8 lg:grid-cols-3">

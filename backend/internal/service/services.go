@@ -28,13 +28,13 @@ import (
 )
 
 type AuthService struct {
-	admins         repository.AdminRepository
-	settings       repository.SettingRepository
-	cfg            *config.Config
-	setupMu        sync.Mutex
-	refreshMu      sync.Mutex
+	admins          repository.AdminRepository
+	settings        repository.SettingRepository
+	cfg             *config.Config
+	setupMu         sync.Mutex
+	refreshMu       sync.Mutex
 	refreshSessions map[string]refreshSession
-	setupTokenPath string
+	setupTokenPath  string
 }
 
 type refreshSession struct {

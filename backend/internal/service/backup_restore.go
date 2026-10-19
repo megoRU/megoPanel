@@ -20,10 +20,10 @@ import (
 )
 
 type BackupRestoreResult struct {
-	BackupID          string   `json:"backupId"`
-	PreRestoreBackup  string   `json:"preRestoreBackupId"`
+	BackupID           string   `json:"backupId"`
+	PreRestoreBackup   string   `json:"preRestoreBackupId"`
 	RestoredComponents []string `json:"restoredComponents"`
-	RestartScheduled  bool     `json:"restartScheduled"`
+	RestartScheduled   bool     `json:"restartScheduled"`
 }
 
 func (s *BackupService) Restore(ctx context.Context, id string) (*BackupRestoreResult, error) {

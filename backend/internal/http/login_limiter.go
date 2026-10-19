@@ -6,9 +6,9 @@ import (
 )
 
 type loginAttempt struct {
-	windowStart time.Time
+	windowStart  time.Time
 	blockedUntil time.Time
-	failures    int
+	failures     int
 }
 
 type loginLimiter struct {
