@@ -39,6 +39,31 @@ type Website = {
   createdAt: string;
 };
 
+type BackupRecord = {
+  id: string;
+  createdAt: string;
+  appVersion: string;
+  components: string[];
+  sizeBytes: number;
+  verified: boolean;
+};
+
+type BackupSettings = {
+  directory: string;
+  scheduleEnabled: boolean;
+  scheduleHour: number;
+  retentionCount: number;
+  retentionDays: number;
+  scheduleComponents: string[];
+};
+
+type BackupOperation = {
+  at: string;
+  action: string;
+  status: string;
+  message: string;
+};
+
 const queryClient = new QueryClient();
 
 // Initialize theme from localStorage on module load
@@ -135,6 +160,281 @@ function UpdateComponent(): React.JSX.Element {
           </button>
         )}
       </div>
+    </div>
+  );
+}
+
+function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes < 0) return '—';
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  let value = bytes / 1024;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return `${value.toFixed(1)} ${units[unit]}`;
+}
+
+function apiErrorMessage(error: unknown, fallback: string): string {
+  return (error as any)?.response?.data?.error || fallback;
+}
+
+function BackupsPanel(): React.JSX.Element {
+  const { t, i18n } = useTranslation();
+  const [selectedComponents, setSelectedComponents] = React.useState<string[]>(['panel', 'mariadb']);
+  const [settingsForm, setSettingsForm] = React.useState<BackupSettings>({
+    directory: '/var/lib/megopanel/backups', scheduleEnabled: false, scheduleHour: 3, retentionCount: 10, retentionDays: 30, scheduleComponents: ['panel', 'mariadb', 'websites'],
+  });
+  const [notice, setNotice] = React.useState<string | null>(null);
+  const [verifiedIds, setVerifiedIds] = React.useState<string[]>([]);
+
+  const settingsQuery = useQuery({
+    queryKey: ['backup-settings'],
+    queryFn: async function loadBackupSettings(): Promise<BackupSettings> {
+      const response = await api.get<BackupSettings>('/backups/settings');
+      return response.data;
+    },
+  });
+  const backupsQuery = useQuery({
+    queryKey: ['backups'],
+    queryFn: async function loadBackups(): Promise<BackupRecord[]> {
+      const response = await api.get<BackupRecord[]>('/backups');
+      return response.data;
+    },
+    refetchInterval: 15000,
+  });
+  const operationsQuery = useQuery({
+    queryKey: ['backup-operations'],
+    queryFn: async function loadBackupOperations(): Promise<BackupOperation[]> {
+      const response = await api.get<BackupOperation[]>('/backups/operations');
+      return response.data;
+    },
+    refetchInterval: 15000,
+  });
+
+  React.useEffect(function syncSettingsForm() {
+    if (settingsQuery.data) setSettingsForm(settingsQuery.data);
+  }, [settingsQuery.data]);
+
+  const refreshBackups = function refreshBackupQueries() {
+    void backupsQuery.refetch();
+    void operationsQuery.refetch();
+  };
+  const createMutation = useMutation({
+    mutationFn: function createBackup() {
+      return api.post<BackupRecord>('/backups', { components: selectedComponents });
+    },
+    onSuccess: function backupCreated(response) {
+      setNotice(`${t('backupCreated')} ${response.data.id}`);
+      refreshBackups();
+    },
+    onError: function backupCreationFailed(error: unknown) {
+      setNotice(apiErrorMessage(error, t('backupFailed')));
+      refreshBackups();
+    },
+  });
+  const settingsMutation = useMutation({
+    mutationFn: function saveBackupSettings() {
+      return api.put<BackupSettings>('/backups/settings', settingsForm);
+    },
+    onSuccess: function backupSettingsSaved(response) {
+      setSettingsForm(response.data);
+      setNotice(t('backupSettingsSaved'));
+      void settingsQuery.refetch();
+    },
+    onError: function backupSettingsFailed(error: unknown) {
+      setNotice(apiErrorMessage(error, t('backupFailed')));
+    },
+  });
+  const verifyMutation = useMutation({
+    mutationFn: function verifyBackup(id: string) {
+      return api.post<BackupRecord>(`/backups/${id}/verify`);
+    },
+    onSuccess: function backupVerified(response) {
+      setVerifiedIds(function addVerifiedId(ids) { return ids.includes(response.data.id) ? ids : [...ids, response.data.id]; });
+      setNotice(t('backupVerified'));
+      refreshBackups();
+    },
+    onError: function backupVerificationFailed(error: unknown) {
+      setNotice(apiErrorMessage(error, t('backupFailed')));
+      refreshBackups();
+    },
+  });
+  const deleteMutation = useMutation({
+    mutationFn: function deleteBackup(id: string) {
+      return api.delete(`/backups/${id}`);
+    },
+    onSuccess: function backupDeleted() {
+      setNotice(t('backupDeleted'));
+      refreshBackups();
+    },
+    onError: function backupDeletionFailed(error: unknown) {
+      setNotice(apiErrorMessage(error, t('backupFailed')));
+      refreshBackups();
+    },
+  });
+  const restoreMutation = useMutation({
+    mutationFn: function restoreBackup(id: string) {
+      return api.post<{ preRestoreBackupId: string; restartScheduled: boolean }>(`/backups/${id}/restore`, { confirm: true });
+    },
+    onSuccess: function backupRestored(response) {
+      const restart = response.data.restartScheduled ? t('backupRestartScheduled') : t('backupRestartManual');
+      setNotice(`${t('backupRestoreComplete')} ${response.data.preRestoreBackupId}. ${restart}`);
+      refreshBackups();
+    },
+    onError: function backupRestoreFailed(error: unknown) {
+      setNotice(apiErrorMessage(error, t('backupFailed')));
+      refreshBackups();
+    },
+  });
+
+  const busy = createMutation.isPending || settingsMutation.isPending || verifyMutation.isPending || deleteMutation.isPending || restoreMutation.isPending;
+  const error = settingsQuery.error || backupsQuery.error || operationsQuery.error;
+
+  function toggleComponent(component: string): void {
+    setSelectedComponents(function updateSelected(current) {
+      return current.includes(component) ? current.filter(function omit(value) { return value !== component; }) : [...current, component];
+    });
+  }
+
+  async function downloadBackup(id: string): Promise<void> {
+    try {
+      const response = await api.get(`/backups/${id}/download`, { responseType: 'blob' });
+      const url = URL.createObjectURL(response.data);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = `${id}.zip`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+    } catch (downloadError) {
+      setNotice(apiErrorMessage(downloadError, t('backupFailed')));
+    }
+  }
+
+  return (
+    <div className="space-y-6 animate-fadeIn">
+      <section className="card p-6 space-y-5">
+        <div>
+          <h3 className="text-base font-semibold text-[var(--heading-color)]">{t('backupCreateTitle')}</h3>
+          <p className="text-sm text-[var(--text-muted)] mt-1">{t('backupCreateDescription')}</p>
+        </div>
+        <div className="flex flex-wrap gap-x-6 gap-y-3 text-sm">
+          {(['panel', 'mariadb', 'websites'] as const).map(function renderComponent(component) {
+            const label = component === 'panel' ? t('backupPanel') : component === 'mariadb' ? t('backupMariaDb') : t('backupWebsites');
+            return (
+              <label className="inline-flex items-center gap-2" key={component}>
+                <input type="checkbox" checked={selectedComponents.includes(component)} disabled={busy} onChange={function changeComponent() { toggleComponent(component); }} />
+                <span>{label}</span>
+              </label>
+            );
+          })}
+        </div>
+        <button className="btn px-4 py-2" type="button" disabled={busy || selectedComponents.length === 0} onClick={function startBackup() { setNotice(null); createMutation.mutate(); }}>
+          {createMutation.isPending ? t('backupCreating') : t('backupCreate')}
+        </button>
+      </section>
+
+      <section className="card p-6 space-y-4">
+        <h3 className="text-base font-semibold text-[var(--heading-color)]">{t('backupSettingsTitle')}</h3>
+        <div className="grid gap-4 md:grid-cols-2">
+          <label className="space-y-1 text-xs font-medium text-[var(--text-muted)]">
+            <span>{t('backupDirectory')}</span>
+            <input className="input" value={settingsForm.directory} disabled={busy} onChange={function changeDirectory(event) { setSettingsForm({ ...settingsForm, directory: event.target.value }); }} />
+          </label>
+          <label className="inline-flex items-center gap-2 text-sm self-end pb-2">
+            <input type="checkbox" checked={settingsForm.scheduleEnabled} disabled={busy} onChange={function changeSchedule() { setSettingsForm({ ...settingsForm, scheduleEnabled: !settingsForm.scheduleEnabled }); }} />
+            <span>{t('backupScheduleEnabled')}</span>
+          </label>
+          <fieldset className="space-y-2 text-sm md:col-span-2" disabled={busy}>
+            <legend className="mb-2 text-xs font-medium text-[var(--text-muted)]">{t('backupScheduleComponents')}</legend>
+            <div className="flex flex-wrap gap-x-6 gap-y-2">
+              {(['panel', 'mariadb', 'websites'] as const).map(function renderScheduledComponent(component) {
+                const label = component === 'panel' ? t('backupPanel') : component === 'mariadb' ? t('backupMariaDb') : t('backupWebsites');
+                return <label className="inline-flex items-center gap-2" key={component}>
+                  <input type="checkbox" checked={settingsForm.scheduleComponents.includes(component)} onChange={function toggleScheduledComponent() {
+                    const components = settingsForm.scheduleComponents.includes(component)
+                      ? settingsForm.scheduleComponents.filter(function omit(value) { return value !== component; })
+                      : [...settingsForm.scheduleComponents, component];
+                    setSettingsForm({ ...settingsForm, scheduleComponents: components });
+                  }} />
+                  <span>{label}</span>
+                </label>;
+              })}
+            </div>
+          </fieldset>
+          <label className="space-y-1 text-xs font-medium text-[var(--text-muted)]">
+            <span>{t('backupScheduleHour')}</span>
+            <input className="input" type="number" min={0} max={23} value={settingsForm.scheduleHour} disabled={busy} onChange={function changeHour(event) { setSettingsForm({ ...settingsForm, scheduleHour: Number(event.target.value) }); }} />
+          </label>
+          <label className="space-y-1 text-xs font-medium text-[var(--text-muted)]">
+            <span>{t('backupRetentionCount')}</span>
+            <input className="input" type="number" min={1} max={1000} value={settingsForm.retentionCount} disabled={busy} onChange={function changeCount(event) { setSettingsForm({ ...settingsForm, retentionCount: Number(event.target.value) }); }} />
+          </label>
+          <label className="space-y-1 text-xs font-medium text-[var(--text-muted)]">
+            <span>{t('backupRetentionDays')}</span>
+            <input className="input" type="number" min={1} max={3650} value={settingsForm.retentionDays} disabled={busy} onChange={function changeDays(event) { setSettingsForm({ ...settingsForm, retentionDays: Number(event.target.value) }); }} />
+          </label>
+        </div>
+        <p className="text-xs text-amber-500">{t('backupSameDiskWarning')}</p>
+        <button className="btn-secondary px-4 py-2" type="button" disabled={busy || settingsQuery.isLoading} onClick={function saveSettings() { settingsMutation.mutate(); }}>
+          {settingsMutation.isPending ? t('loading') : t('backupSaveSettings')}
+        </button>
+      </section>
+
+      {notice ? <div className="rounded-md border border-[var(--border-color)] px-4 py-3 text-sm text-[var(--text-color)]" role="status">{notice}</div> : null}
+      {error ? <div className="rounded-md border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-500" role="alert">{apiErrorMessage(error, t('backupFailed'))}</div> : null}
+
+      <section className="card p-6 space-y-4">
+        <div className="flex items-center justify-between gap-4">
+          <h3 className="text-base font-semibold text-[var(--heading-color)]">{t('backupListTitle')}</h3>
+          <button className="btn-secondary px-3 py-1.5 text-xs" type="button" disabled={backupsQuery.isFetching} onClick={function reloadBackups() { refreshBackups(); }}>{t('backupRefresh')}</button>
+        </div>
+        {backupsQuery.isLoading ? <p className="text-sm text-[var(--text-muted)]">{t('loading')}</p> : null}
+        {!backupsQuery.isLoading && backupsQuery.data?.length === 0 ? <p className="text-sm text-[var(--text-muted)]">{t('backupEmpty')}</p> : null}
+        {backupsQuery.data && backupsQuery.data.length > 0 ? (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[760px] text-left text-sm">
+              <thead className="text-xs uppercase tracking-wider text-[var(--text-muted)]">
+                <tr><th className="py-3 pr-4">{t('backupDate')}</th><th className="py-3 pr-4">{t('backupComponents')}</th><th className="py-3 pr-4">{t('backupSize')}</th><th className="py-3 pr-4">{t('backupStatus')}</th><th className="py-3">{t('backupActions')}</th></tr>
+              </thead>
+              <tbody>
+                {backupsQuery.data.map(function renderBackup(backup) {
+                  const components = backup.components.map(function translateComponent(component) { return component === 'panel' ? t('backupPanel') : component === 'mariadb' ? t('backupMariaDb') : t('backupWebsites'); }).join(', ');
+                  const verified = backup.verified || verifiedIds.includes(backup.id);
+                  return (
+                    <tr className="border-t border-[var(--border-color)] align-top" key={backup.id}>
+                      <td className="py-3 pr-4 whitespace-nowrap">{new Date(backup.createdAt).toLocaleString(i18n.language)}</td>
+                      <td className="py-3 pr-4">{components}</td>
+                      <td className="py-3 pr-4 whitespace-nowrap">{formatBytes(backup.sizeBytes)}</td>
+                      <td className="py-3 pr-4">{verified ? <span className="text-emerald-500">{t('backupVerified')}</span> : <span className="text-amber-500">{t('backupNotVerified')}</span>}</td>
+                      <td className="py-3"><div className="flex flex-wrap gap-2">
+                        <button className="btn-secondary px-2.5 py-1 text-xs" disabled={busy} type="button" onClick={function download() { void downloadBackup(backup.id); }}>{t('backupDownload')}</button>
+                        <button className="btn-secondary px-2.5 py-1 text-xs" disabled={busy} type="button" onClick={function verify() { verifyMutation.mutate(backup.id); }}>{verifyMutation.isPending ? t('loading') : t('backupVerify')}</button>
+                        <button className="btn-secondary px-2.5 py-1 text-xs" disabled={busy} type="button" onClick={function restore() { if (window.confirm(t('backupRestoreConfirm'))) restoreMutation.mutate(backup.id); }}>{restoreMutation.isPending ? t('loading') : t('backupRestore')}</button>
+                        <button className="btn-secondary px-2.5 py-1 text-xs text-rose-500" disabled={busy} type="button" onClick={function remove() { if (window.confirm(t('backupDeleteConfirm'))) deleteMutation.mutate(backup.id); }}>{t('delete')}</button>
+                      </div></td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        ) : null}
+      </section>
+
+      <section className="card p-6 space-y-3">
+        <h3 className="text-base font-semibold text-[var(--heading-color)]">{t('backupOperations')}</h3>
+        {operationsQuery.data?.length ? operationsQuery.data.map(function renderOperation(operation, index) {
+          return <div className="flex flex-wrap justify-between gap-2 border-t border-[var(--border-color)] pt-3 text-sm" key={`${operation.at}-${index}`}>
+            <span>{new Date(operation.at).toLocaleString(i18n.language)} · {operation.action}</span>
+            <span className={operation.status === 'success' ? 'text-emerald-500' : 'text-rose-500'}>{operation.message}</span>
+          </div>;
+        }) : <p className="text-sm text-[var(--text-muted)]">{t('backupNoOperations')}</p>}
+      </section>
     </div>
   );
 }
@@ -244,7 +544,7 @@ function Layout(properties: { children: React.ReactNode; showHeaderControls?: bo
               MegoPanel
             </span>
             <span className="h-4 w-[1px] bg-[var(--border-color)] hidden sm:block"></span>
-            <span className="text-sm text-[var(--text-muted)] font-mono hidden sm:block">v1.1.2</span>
+            <span className="text-sm text-[var(--text-muted)] font-mono hidden sm:block">v1.2.0</span>
           </div>
 
           <div className="flex items-center gap-4">
@@ -350,7 +650,7 @@ function Login(): React.JSX.Element {
 function Onboarding(): React.JSX.Element {
   const { t } = useTranslation();
   const [step, setStep] = React.useState(1);
-  const [remoteAccessEnabled, setRemoteAccessEnabled] = React.useState(false);
+  const [setupToken, setSetupToken] = React.useState('');
   const [dbRootPassword, setDbRootPassword] = React.useState('');
 
   // ROUTE PROTECTION: Redirect to '/' if already configured
@@ -393,7 +693,7 @@ function Onboarding(): React.JSX.Element {
     mutationFn: function createAdministrator(formData: FormData) {
       const username = formData.get('username');
       const password = formData.get('password');
-      return api.post('/setup/admin', { username: username, password: password });
+      return api.post('/setup/admin', { username: username, password: password, setupToken: setupToken });
     },
     onSuccess: function handleAdministratorCreated(): void {
       setStep(2);
@@ -402,7 +702,7 @@ function Onboarding(): React.JSX.Element {
 
   const installMariaDbMutation = useMutation({
     mutationFn: function installMariaDb() {
-      return api.post('/install/mariadb', { remoteAccess: remoteAccessEnabled, rootPassword: dbRootPassword });
+      return api.post('/install/mariadb', { remoteAccess: false, rootPassword: dbRootPassword });
     },
     onSuccess: function handleMariaDbInstalled(): void {
       void onboardingMariaDbStatusQuery.refetch();
@@ -440,10 +740,6 @@ function Onboarding(): React.JSX.Element {
     adminMutation.mutate(formData);
   }
 
-  function changeRemoteAccess(event: React.ChangeEvent<HTMLInputElement>): void {
-    setRemoteAccessEnabled(event.target.checked);
-  }
-
   function installMariaDb(): void {
     installMariaDbMutation.mutate();
   }
@@ -476,12 +772,24 @@ function Onboarding(): React.JSX.Element {
           <form action={submitAdministrator} className="space-y-4">
             <h3 className="text-sm font-semibold uppercase tracking-wider text-[var(--text-muted)]">{t('createAdmin')}</h3>
             <div>
+              <label className="block text-sm font-medium text-[var(--text-muted)] mb-1 uppercase tracking-wider">{t('setupToken')}</label>
+              <input
+                className="input"
+                name="setupToken"
+                type="password"
+                autoComplete="one-time-code"
+                value={setupToken}
+                onChange={function handleSetupTokenChange(e: React.ChangeEvent<HTMLInputElement>) { setSetupToken(e.target.value); }}
+                required
+              />
+            </div>
+            <div>
               <label className="block text-sm font-medium text-[var(--text-muted)] mb-1 uppercase tracking-wider">{t('username')}</label>
               <input className="input" name="username" placeholder="admin" required />
             </div>
             <div>
               <label className="block text-sm font-medium text-[var(--text-muted)] mb-1 uppercase tracking-wider">{t('password')}</label>
-              <input className="input" name="password" placeholder="••••••••" type="password" required />
+              <input className="input" name="password" placeholder="••••••••" type="password" minLength={12} required />
             </div>
             <div>
               <label className="block text-sm font-medium text-[var(--text-muted)] mb-1 uppercase tracking-wider">{t('confirm')}</label>
@@ -513,11 +821,7 @@ function Onboarding(): React.JSX.Element {
                     </div>
                   </div>
 
-                  <label className="flex items-center gap-2 text-xs text-[var(--text-color)] cursor-pointer select-none">
-                    <input className="accent-white border-zinc-800 rounded" checked={remoteAccessEnabled} onChange={changeRemoteAccess} type="checkbox" />
-                    {t('remote')}
-                  </label>
-                  {(onboardingMariaDbStatusQuery.data === undefined || onboardingMariaDbStatusQuery.data.installed !== true) && (
+                  {onboardingMariaDbStatusQuery.data?.installed === true && (
                     <div className="space-y-1">
                       <label className="block text-[10px] font-semibold text-[var(--text-muted)] uppercase tracking-wider">{t('dbRootPasswordLabel')}</label>
                       <input
@@ -531,7 +835,7 @@ function Onboarding(): React.JSX.Element {
                   )}
                 </div>
                 <div>
-                  {(onboardingMariaDbStatusQuery.data === undefined || onboardingMariaDbStatusQuery.data.installed !== true) && (
+                  {onboardingMariaDbStatusQuery.data?.installed === true ? (
                     <button
                       className="btn flex items-center justify-center gap-2 cursor-pointer w-full text-xs py-1.5"
                       onClick={installMariaDb}
@@ -546,10 +850,12 @@ function Onboarding(): React.JSX.Element {
                           </svg>
                           {t('installing')}
                         </>
-                      ) : t('install')}
+                      ) : t('configureMariaDb')}
                     </button>
-                  )}
-                  {installMariaDbMutation.error ? <p className="text-xs font-semibold text-rose-500">Installation failed</p> : null}
+                  ) : onboardingMariaDbStatusQuery.data?.installed === false ? (
+                    <p className="text-xs text-[var(--text-muted)]">{t('mariadbNeedsInstaller')}</p>
+                  ) : null}
+                  {installMariaDbMutation.error ? <p className="text-xs font-semibold text-rose-500">{apiErrorMessage(installMariaDbMutation.error, t('databaseConfigurationFailed'))}</p> : null}
                 </div>
               </div>
 
@@ -648,7 +954,7 @@ function Onboarding(): React.JSX.Element {
 
 function Dashboard(): React.JSX.Element {
   const { t, i18n } = useTranslation();
-  const [activeTab, setActiveTab] = React.useState<'websites' | 'databases' | 'settings'>('websites');
+  const [activeTab, setActiveTab] = React.useState<'websites' | 'databases' | 'backups' | 'settings'>('websites');
 
   const statsQuery = useQuery({
     queryKey: ['dashboard'],
@@ -834,7 +1140,7 @@ function Dashboard(): React.JSX.Element {
       </div>
 
       {/* Navigation Tabs */}
-      <div className="mb-8 border-b border-[var(--border-color)] flex gap-6 animate-fadeIn">
+      <div className="mb-8 border-b border-[var(--border-color)] flex flex-wrap gap-6 animate-fadeIn">
         <button
           className={`pb-3 px-1 font-semibold text-xs transition-all border-b-2 uppercase tracking-wider cursor-pointer ${
             activeTab === 'websites'
@@ -859,6 +1165,17 @@ function Dashboard(): React.JSX.Element {
         </button>
         <button
           className={`pb-3 px-1 font-semibold text-xs transition-all border-b-2 uppercase tracking-wider cursor-pointer ${
+            activeTab === 'backups'
+              ? 'border-[var(--accent-color)] text-[var(--text-color)] font-bold'
+              : 'border-transparent text-[var(--text-muted)] hover:text-[var(--text-color)]'
+          }`}
+          onClick={function selectBackupsTab() { setActiveTab('backups'); }}
+          type="button"
+        >
+          {t('backups')}
+        </button>
+        <button
+          className={`pb-3 px-1 font-semibold text-xs transition-all border-b-2 uppercase tracking-wider cursor-pointer ${
             activeTab === 'settings'
               ? 'border-[var(--accent-color)] text-[var(--text-color)] font-bold'
               : 'border-transparent text-[var(--text-muted)] hover:text-[var(--text-color)]'
@@ -876,6 +1193,7 @@ function Dashboard(): React.JSX.Element {
           {/* Create Website Form */}
           <section className="card p-6 lg:col-span-1 h-fit space-y-4">
             <h3 className="text-base font-semibold text-[var(--heading-color)]">{t('createSite')}</h3>
+            <p className="text-xs text-[var(--text-muted)]">{t('siteCreateDescription')}</p>
             <form onSubmit={handleCreateWebsite} className="space-y-4">
               <div>
                 <label className="block text-xs font-medium text-[var(--text-muted)] mb-1 uppercase tracking-wider">{t('domain')}</label>
@@ -942,7 +1260,7 @@ function Dashboard(): React.JSX.Element {
                             <button
                               className="btn-danger py-1 px-3 text-[10px] uppercase tracking-wider font-semibold cursor-pointer"
                               onClick={function deleteSelectedWebsite(): void {
-                                if (window.confirm(i18n.language.startsWith('ru') ? `Вы уверены, что хотите удалить сайт ${site.domain}?` : `Are you sure you want to delete website ${site.domain}?`)) {
+                                if (window.confirm(t('websiteDeleteConfirm'))) {
                                   deleteWebsiteMutation.mutate(site.id);
                                 }
                               }}
@@ -970,26 +1288,33 @@ function Dashboard(): React.JSX.Element {
             <div className="card p-8 text-center max-w-xl mx-auto space-y-4">
               <h3 className="text-lg font-semibold text-[var(--heading-color)]">MariaDB</h3>
               <p className="text-[var(--text-muted)] text-sm">{t('mariadbNotInstalled')}</p>
-              <div className="space-y-1 text-left max-w-sm mx-auto">
-                <label className="block text-[10px] font-semibold text-[var(--text-muted)] uppercase tracking-wider">{t('dbRootPasswordLabel')}</label>
-                <input
-                  className="input"
-                  type="password"
-                  placeholder={t('dbRootPasswordPlaceholder')}
-                  value={dashboardDbRootPassword}
-                  onChange={function handleDashboardDbRootPasswordChange(e: React.ChangeEvent<HTMLInputElement>) { setDashboardDbRootPassword(e.target.value); }}
-                />
-              </div>
-              <button
-                className="btn cursor-pointer w-full max-w-sm py-2"
-                onClick={function installDbService() { installMariaDbMutation.mutate(); }}
-                disabled={installMariaDbMutation.isPending}
-              >
-                {installMariaDbMutation.isPending ? t('installing') : t('installMariaDb')}
-              </button>
             </div>
           ) : (
             <div className="space-y-8">
+              <section className="card p-5 space-y-3">
+                <div>
+                  <h3 className="text-base font-semibold text-[var(--heading-color)]">{t('configureMariaDb')}</h3>
+                  <p className="text-sm text-[var(--text-muted)]">{t('mariadbCredentialHelp')}</p>
+                </div>
+                <div className="flex flex-col sm:flex-row gap-3">
+                  <input
+                    className="input"
+                    type="password"
+                    placeholder={t('dbRootPasswordPlaceholder')}
+                    value={dashboardDbRootPassword}
+                    onChange={function handleDashboardDbRootPasswordChange(e: React.ChangeEvent<HTMLInputElement>) { setDashboardDbRootPassword(e.target.value); }}
+                  />
+                  <button
+                    className="btn cursor-pointer shrink-0"
+                    onClick={function configureDbService() { installMariaDbMutation.mutate(); }}
+                    disabled={installMariaDbMutation.isPending}
+                  >
+                    {installMariaDbMutation.isPending ? t('installing') : t('configureMariaDb')}
+                  </button>
+                </div>
+                {installMariaDbMutation.error ? <p className="text-sm text-rose-500">{apiErrorMessage(installMariaDbMutation.error, t('databaseConfigurationFailed'))}</p> : null}
+                {installMariaDbMutation.isSuccess ? <p className="text-sm text-emerald-400">{t('databaseConfigured')}</p> : null}
+              </section>
               <div className="grid gap-8 lg:grid-cols-3">
                 {/* Create Database Form */}
                 <section className="card p-6 lg:col-span-1 h-fit space-y-4">
@@ -1216,7 +1541,7 @@ function Dashboard(): React.JSX.Element {
               <div className="space-y-2">
                 <p className="text-sm text-[var(--text-color)]">
                   <span className="font-semibold text-[var(--text-muted)] mr-2">{t('updateCurrent')}</span>
-                  <span className="font-mono text-zinc-400">v1.1.2</span>
+                  <span className="font-mono text-zinc-400">v1.2.0</span>
                 </p>
 
                 {/* State-driven display for latest update status */}
@@ -1226,6 +1551,8 @@ function Dashboard(): React.JSX.Element {
           </section>
         </div>
       ) : null}
+
+      {activeTab === 'backups' ? <BackupsPanel /> : null}
     </Layout>
   );
 }

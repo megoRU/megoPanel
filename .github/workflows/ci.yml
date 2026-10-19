@@ -5,27 +5,39 @@ on:
     branches: [ main, master ]
   pull_request:
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
-
 jobs:
   backend:
     name: Backend
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
-          go-version: '1.24.x'
+          go-version: '1.27.x'
           cache-dependency-path: backend/go.sum
       - name: Resolve dependencies
         working-directory: backend
         run: go mod tidy
       - name: Format check
         working-directory: backend
-        run: test -z "$(gofmt -l .)"
+        run: |
+          files="$(gofmt -l .)"
+          if [ -n "$files" ]; then
+            echo "These Go files need gofmt:"
+            printf '%s\n' "$files"
+            while IFS= read -r file; do
+              gofmt -d "$file" || true
+            done <<< "$files"
+            exit 1
+          fi
+      - name: Unit tests
+        working-directory: backend
+        run: go test ./...
+      - name: Vet
+        working-directory: backend
+        run: go vet ./...
       - name: Build
         working-directory: backend
         run: go build -trimpath -ldflags='-s -w' -o megopanel ./cmd/server
@@ -35,14 +47,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       - name: Set up Node.js
         uses: actions/setup-node@v5
         with:
           node-version: '22'
       - name: Install dependencies
         working-directory: frontend
-        run: npm ci || npm install
+        run: npm ci
       - name: Build
         working-directory: frontend
         run: npm run build

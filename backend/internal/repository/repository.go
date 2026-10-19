@@ -14,6 +14,7 @@ type AdminRepository interface {
 type SettingRepository interface {
 	Get(key string) (string, bool, error)
 	Set(key string, value string) error
+	Delete(key string) error
 }
 type ServiceRepository interface {
 	Get(name string) (*domain.ServiceState, error)
@@ -50,6 +51,9 @@ func (r *GormSettingRepository) Get(k string) (string, bool, error) {
 }
 func (r *GormSettingRepository) Set(k, v string) error {
 	return r.db.Save(&domain.Setting{Key: k, Value: v}).Error
+}
+func (r *GormSettingRepository) Delete(k string) error {
+	return r.db.Delete(&domain.Setting{}, "key = ?", k).Error
 }
 
 type GormServiceRepository struct{ db *gorm.DB }

@@ -19,6 +19,7 @@ CONFIG_DIR="/etc/megopanel"
 DATA_DIR="/var/lib/megopanel"
 APP_PORT="8888"
 LOG_FILE="/tmp/megopanel-install.log"
+CURL_PROXY_ARGS=()
 
 # Define styling helpers
 BLUE="\033[1;34m"
@@ -52,8 +53,121 @@ run_cmd() {
   fi
 }
 
+if [[ -L "${LOG_FILE}" || ( -e "${LOG_FILE}" && ! -f "${LOG_FILE}" ) ]]; then
+  log_error "Installer log path is not a regular file; refusing to write through it"
+  exit 1
+fi
+touch "${LOG_FILE}"
+chmod 0600 "${LOG_FILE}"
+
 generate_secret() {
-  openssl rand -hex 32 2>/dev/null || echo "default_secret_key_1234567890abcdef"
+  if command -v openssl >/dev/null 2>&1; then
+    openssl rand -hex 32
+  else
+    od -An -N32 -tx1 /dev/urandom | tr -d ' \n'
+  fi
+}
+
+install_go_toolchain() {
+  local required="1.27.2"
+  local installed=""
+  if command -v go >/dev/null 2>&1; then
+    installed="$(go version | awk '{print $3}' | sed 's/^go//')"
+  fi
+  if [[ -n "${installed}" && "$(printf '%s\n%s\n' "${required}" "${installed}" | sort -V | tail -n 1)" == "${installed}" ]]; then
+    return 0
+  fi
+
+  local architecture archive_name checksum
+  case "$(dpkg --print-architecture)" in
+    amd64) architecture="amd64"; checksum="ecbadb99091a3f46e31f5f934b068b1864eafa7995211b39eaddf76996045fe5" ;;
+    arm64) architecture="arm64"; checksum="94f3e30b8e374bc285e7dadc11e0865726b9bc6e85b841ccceaabc0214c6b7c8" ;;
+    armhf) architecture="armv6l"; checksum="e25a174051d8675f87ac720aedcd25bf89ac652c4b82f26aa47919524725ed95" ;;
+    *) log_error "Go ${required} is not packaged for this CPU architecture"; return 1 ;;
+  esac
+
+  archive_name="go${required}.linux-${architecture}.tar.gz"
+  local archive_path="/tmp/megopanel-${archive_name}"
+  local install_path="/usr/local/lib/go-${required}"
+  if [[ -x "${install_path}/bin/go" ]]; then
+    installed="$("${install_path}/bin/go" version | awk '{print $3}' | sed 's/^go//')"
+    if [[ "$(printf '%s\n%s\n' "${required}" "${installed}" | sort -V | tail -n 1)" == "${installed}" ]]; then
+      export PATH="${install_path}/bin:${PATH}"
+      return 0
+    fi
+    log_error "${install_path} exists but does not contain the required Go toolchain"
+    return 1
+  fi
+
+  log_step "Downloading the supported Go ${required} toolchain for Linux..."
+  run_cmd "download Go toolchain" curl "${CURL_PROXY_ARGS[@]}" --fail --show-error --location --connect-timeout 15 --retry 3 --retry-delay 2 --output "${archive_path}" "https://go.dev/dl/${archive_name}"
+  if ! printf '%s  %s\n' "${checksum}" "${archive_path}" | sha256sum --check --status; then
+    rm -f "${archive_path}"
+    log_error "Go toolchain checksum validation failed"
+    return 1
+  fi
+  local staging_path
+  staging_path="$(mktemp -d /usr/local/lib/.megopanel-go.XXXXXX)"
+  run_cmd "extract Go toolchain" tar -xzf "${archive_path}" --strip-components=1 -C "${staging_path}"
+  if ! mv "${staging_path}" "${install_path}"; then
+    rm -rf "${staging_path}"
+    log_error "Could not install Go toolchain in ${install_path}"
+    return 1
+  fi
+  rm -f "${archive_path}"
+  export PATH="${install_path}/bin:${PATH}"
+  log_success "Using Go $(go version | awk '{print $3}')"
+}
+
+install_node_toolchain() {
+  local required="22.23.3"
+  local installed=""
+  if command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1; then
+    installed="$(node --version | sed 's/^v//')"
+  fi
+  if [[ -n "${installed}" && "$(printf '%s\n%s\n' "${required}" "${installed}" | sort -V | tail -n 1)" == "${installed}" ]]; then
+    return 0
+  fi
+
+  local architecture archive_name checksum
+  case "$(dpkg --print-architecture)" in
+    amd64) architecture="x64"; checksum="1084aa36196bba4c3a5e69a1ee388a6e4ff729dad09445fbcd434b28fe3c24af" ;;
+    arm64) architecture="arm64"; checksum="5ced2d48d1d7198739b7f86804de0171aefb6823b684b12341d3321afc3cb0b2" ;;
+    armhf) architecture="armv7l"; checksum="8b99058ec6f4e372b9887f8ecb577a292adb132d59e5104356428a758fdb126c" ;;
+    *) log_error "Node.js ${required} is not packaged for this CPU architecture"; return 1 ;;
+  esac
+
+  archive_name="node-v${required}-linux-${architecture}.tar.gz"
+  local archive_path="/tmp/megopanel-${archive_name}"
+  local install_path="/usr/local/lib/node-v${required}"
+  if [[ -x "${install_path}/bin/node" && -x "${install_path}/bin/npm" ]]; then
+    installed="$("${install_path}/bin/node" --version | sed 's/^v//')"
+    if [[ "$(printf '%s\n%s\n' "${required}" "${installed}" | sort -V | tail -n 1)" == "${installed}" ]]; then
+      export PATH="${install_path}/bin:${PATH}"
+      return 0
+    fi
+    log_error "${install_path} exists but does not contain the required Node.js toolchain"
+    return 1
+  fi
+
+  log_step "Downloading the supported Node.js ${required} toolchain for Linux..."
+  run_cmd "download Node.js toolchain" curl "${CURL_PROXY_ARGS[@]}" --fail --show-error --location --connect-timeout 15 --retry 3 --retry-delay 2 --output "${archive_path}" "https://nodejs.org/dist/v${required}/${archive_name}"
+  if ! printf '%s  %s\n' "${checksum}" "${archive_path}" | sha256sum --check --status; then
+    rm -f "${archive_path}"
+    log_error "Node.js toolchain checksum validation failed"
+    return 1
+  fi
+  local staging_path
+  staging_path="$(mktemp -d /usr/local/lib/.megopanel-node.XXXXXX)"
+  run_cmd "extract Node.js toolchain" tar -xzf "${archive_path}" --strip-components=1 -C "${staging_path}"
+  if ! mv "${staging_path}" "${install_path}"; then
+    rm -rf "${staging_path}"
+    log_error "Could not install Node.js toolchain in ${install_path}"
+    return 1
+  fi
+  rm -f "${archive_path}"
+  export PATH="${install_path}/bin:${PATH}"
+  log_success "Using Node.js $(node --version)"
 }
 
 detect_server_ip() {
@@ -96,67 +210,65 @@ fi
 # Component Installers
 install_nginx() {
   log_step "Checking Nginx..."
-  if command -v nginx >/dev/null 2>&1 || [[ -f /usr/sbin/nginx ]]; then
-    log_success "Already installed"
-    return 0
+  if ! command -v nginx >/dev/null 2>&1 && [[ ! -f /usr/sbin/nginx ]]; then
+    log_step "Installing Nginx..."
+    run_cmd "install Nginx" apt-get install -y nginx
   fi
-
-  log_step "Installing Nginx..."
-  apt-get install -y nginx >> "${LOG_FILE}" 2>&1
-  systemctl enable --now nginx >> "${LOG_FILE}" 2>&1
-  systemctl restart nginx >> "${LOG_FILE}" 2>&1
-  log_success "Installed successfully"
+  run_cmd "enable Nginx" systemctl enable --now nginx
+  log_success "Nginx is installed and running"
 }
 
 install_mariadb() {
   log_step "Checking MariaDB..."
-  if command -v mysql >/dev/null 2>&1 || command -v mariadb >/dev/null 2>&1 || [[ -f /usr/sbin/mariadbd ]] || [[ -f /usr/sbin/mysqld ]]; then
-    log_success "Already installed"
-    return 0
+  if ! command -v mysql >/dev/null 2>&1 && ! command -v mariadb >/dev/null 2>&1 && [[ ! -f /usr/sbin/mariadbd ]] && [[ ! -f /usr/sbin/mysqld ]]; then
+    log_step "Installing MariaDB..."
+    run_cmd "install MariaDB" apt-get install -y mariadb-server
   fi
-
-  log_step "Installing MariaDB..."
-  apt-get install -y mariadb-server >> "${LOG_FILE}" 2>&1
-  systemctl enable --now mariadb >> "${LOG_FILE}" 2>&1
-  systemctl restart mariadb >> "${LOG_FILE}" 2>&1
-  log_success "Installed successfully"
+  run_cmd "enable MariaDB" systemctl enable --now mariadb
+  log_success "MariaDB is installed and running"
 }
 
 install_php() {
-  log_step "Checking PHP..."
-  if command -v php >/dev/null 2>&1; then
-    log_success "Already installed"
-    return 0
+  log_step "Ensuring PHP-FPM and required modules are installed..."
+  run_cmd "install PHP-FPM and modules" apt-get install -y php-fpm php-mysql php-mbstring php-xml php-curl php-zip php-gd
+  local php_service
+  php_service="$(systemctl list-unit-files --type=service --no-legend | awk '$1 ~ /^php[0-9.]+-fpm\.service$/ { sub(/\.service$/, "", $1); print $1; exit }')"
+  if [[ -z "${php_service}" ]]; then
+    log_error "PHP-FPM service was not found after installing its packages"
+    return 1
   fi
-
-  log_step "Installing PHP and modules..."
-  apt-get install -y php-fpm php-mysql php-mbstring php-xml php-curl php-zip php-gd >> "${LOG_FILE}" 2>&1
-  log_success "Installed successfully"
+  run_cmd "enable PHP-FPM" systemctl enable --now "${php_service}"
 }
 
 install_phpmyadmin() {
   log_step "Checking phpMyAdmin..."
-  if [[ -d "/var/www/phpmyadmin" && -f "/var/www/phpmyadmin/config.inc.php" ]]; then
-    log_success "Already installed"
-    return 0
-  fi
-
   log_step "Ensuring phpMyAdmin PHP modules are installed..."
   install_php
-  apt-get install -y tar curl >> "${LOG_FILE}" 2>&1
+  run_cmd "install phpMyAdmin archive tools" apt-get install -y tar curl
+  if [[ -L "/var/www/phpmyadmin" ]]; then
+    log_error "/var/www/phpmyadmin is a symlink; refusing to write through it"
+    return 1
+  fi
+  if [[ ! -f "/var/www/phpmyadmin/index.php" ]]; then
+    log_step "Downloading phpMyAdmin..."
+    mkdir -p /var/www/phpmyadmin
+    local archive_path="/tmp/phpmyadmin-5.2.1-all-languages.tar.gz"
+    run_cmd "download phpMyAdmin" curl --fail --show-error --location --connect-timeout 15 --retry 3 --retry-delay 2 --output "${archive_path}" "https://files.phpmyadmin.net/phpMyAdmin/5.2.1/phpMyAdmin-5.2.1-all-languages.tar.gz"
+    run_cmd "extract phpMyAdmin" tar -xzf "${archive_path}" --strip-components=1 -C /var/www/phpmyadmin
+    rm -f "${archive_path}"
+  else
+    log_success "phpMyAdmin files already exist; preserving the existing installation"
+  fi
 
-  log_step "Downloading phpMyAdmin..."
-  mkdir -p /var/www/phpmyadmin
-  local archive_path="/tmp/phpmyadmin-5.2.1-all-languages.tar.gz"
-  curl --fail --show-error --location --connect-timeout 15 --retry 3 --retry-delay 2 --output "${archive_path}" "https://files.phpmyadmin.net/phpMyAdmin/5.2.1/phpMyAdmin-5.2.1-all-languages.tar.gz" >> "${LOG_FILE}" 2>&1
-  tar -xzf "${archive_path}" --strip-components=1 -C /var/www/phpmyadmin >> "${LOG_FILE}" 2>&1
-  rm -f "${archive_path}"
-
-  log_step "Generating phpMyAdmin config and scripts..."
-  local blowfish_secret
-  blowfish_secret="$(openssl rand -hex 16)"
-
-  cat <<EOF > /var/www/phpmyadmin/config.inc.php
+  log_step "Configuring phpMyAdmin sign-on..."
+  if [[ -L /var/www/phpmyadmin/config.inc.php ]]; then
+    log_error "phpMyAdmin config is a symlink; refusing to write through it"
+    return 1
+  fi
+  if [[ ! -f /var/www/phpmyadmin/config.inc.php ]]; then
+    local blowfish_secret
+    blowfish_secret="$(openssl rand -hex 16)"
+    cat <<EOF > /var/www/phpmyadmin/config.inc.php
 <?php
 \$cfg['blowfish_secret'] = '${blowfish_secret}';
 \$i = 0;
@@ -170,175 +282,25 @@ install_phpmyadmin() {
 \$cfg['Servers'][\$i]['compress'] = false;
 \$cfg['Servers'][\$i]['AllowNoPassword'] = false;
 EOF
+  fi
 
-  cat <<'EOF' > /var/www/phpmyadmin/autologin.php
-<?php
-if (isset($_GET['token'])) {
-    $token = preg_replace('/[^a-zA-Z0-9-]/', '', $_GET['token']);
-    header('Location: signon.php?token=' . $token);
-    exit;
-}
-header('Location: index.php');
-exit;
-EOF
-
-  cat <<EOF > /var/www/phpmyadmin/signon.php
-<?php
-session_name('SignonSession');
-session_start();
-
-if (isset(\$_GET['action']) && \$_GET['action'] === 'logout') {
-    unset(\$_SESSION['PMA_single_signon_user']);
-    unset(\$_SESSION['PMA_single_signon_password']);
-    unset(\$_SESSION['PMA_single_signon_host']);
-    session_destroy();
-    header('Location: http://' . \$_SERVER['HTTP_HOST'] . ':${APP_PORT}/');
-    exit;
-}
-
-\$token = isset(\$_GET['token']) ? preg_replace('/[^a-zA-Z0-9-]/', '', \$_GET['token']) : '';
-
-if (empty(\$token)) {
-    show_error_page("Token is missing or invalid.", "Please try logging in to phpMyAdmin again from the MegoPanel dashboard.");
-}
-
-\$apiUrl = "http://127.0.0.1:${APP_PORT}/internal/phpmyadmin/token?token=" . urlencode(\$token);
-
-\$ch = curl_init();
-curl_setopt(\$ch, CURLOPT_URL, \$apiUrl);
-curl_setopt(\$ch, CURLOPT_RETURNTRANSFER, true);
-curl_setopt(\$ch, CURLOPT_TIMEOUT, 5);
-\$response = curl_exec(\$ch);
-\$httpCode = curl_getinfo(\$ch, CURLINFO_HTTP_CODE);
-curl_close(\$ch);
-
-if (\$httpCode !== 200 || !\$response) {
-    \$ctx = stream_context_create([
-        'http' => [
-            'timeout' => 5,
-            'ignore_errors' => true
-        ]
-    ]);
-    \$response = @file_get_contents(\$apiUrl, false, \$ctx);
-    \$httpCode = 0;
-    if (isset(\$http_response_header[0])) {
-        preg_match('{HTTP\/\S+\s+(\d+)}', \$http_response_header[0], \$matches);
-        if (isset(\$matches[1])) {
-            \$httpCode = intval(\$matches[1]);
-        }
-    }
-}
-
-if (\$httpCode !== 200 || !\$response) {
-    show_error_page("Authentication failed.", "The autologin token is invalid, expired (expired after 15 seconds), or already used. Please go back to the MegoPanel dashboard and try again.");
-}
-
-\$data = json_decode(\$response, true);
-if (!\$data || !isset(\$data['username']) || !isset(\$data['password'])) {
-    show_error_page("Malformed API response.", "The authentication service returned an invalid response format.");
-}
-
-\$_SESSION['PMA_single_signon_user'] = \$data['username'];
-\$_SESSION['PMA_single_signon_password'] = \$data['password'];
-\$_SESSION['PMA_single_signon_host'] = 'localhost';
-
-header('Location: index.php');
-exit;
-
-function show_error_page(\$title, \$message) {
-    header("HTTP/1.1 403 Forbidden");
-    ?>
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>phpMyAdmin Autologin Error</title>
-        <style>
-            body {
-                background: #0f0f11;
-                color: #e4e4e7;
-                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                min-height: 100vh;
-                margin: 0;
-            }
-            .card {
-                background: #18181b;
-                border: 1px solid #27272a;
-                border-radius: 8px;
-                padding: 32px;
-                max-width: 480px;
-                width: 100%;
-                box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
-                text-align: center;
-            }
-            .icon {
-                color: #ef4444;
-                font-size: 48px;
-                margin-bottom: 16px;
-            }
-            h1 {
-                font-size: 20px;
-                font-weight: 600;
-                margin: 0 0 12px 0;
-                color: #ffffff;
-            }
-            p {
-                font-size: 14px;
-                color: #a1a1aa;
-                line-height: 1.5;
-                margin: 0 0 24px 0;
-            }
-            .btn {
-                display: inline-block;
-                background: #ffffff;
-                color: #0f0f11;
-                font-weight: 600;
-                font-size: 13px;
-                text-decoration: none;
-                padding: 10px 20px;
-                border-radius: 6px;
-                transition: background 0.15s ease;
-            }
-            .btn:hover {
-                background: #e4e4e7;
-            }
-        </style>
-    </head>
-    <body>
-        <div class="card">
-            <div class="icon">⚠️</div>
-            <h1><?php echo htmlspecialchars(\$title); ?></h1>
-            <p><?php echo htmlspecialchars(\$message); ?></p>
-            <a href="http://<?php echo htmlspecialchars(\$_SERVER['HTTP_HOST']); ?>:${APP_PORT}/" class="btn">Back to Dashboard</a>
-        </div>
-    </body>
-    </html>
-    <?php
-    exit;
-}
-EOF
-
+  install -m 0644 "${BACKEND_DIR}/internal/service/templates/autologin.php" /var/www/phpmyadmin/autologin.php
+  install -m 0644 "${BACKEND_DIR}/internal/service/templates/signon.php" /var/www/phpmyadmin/signon.php
+  sed -i "s/__MEGOPANEL_API_PORT__/${APP_PORT}/g" /var/www/phpmyadmin/signon.php
   log_step "Setting phpMyAdmin files ownership..."
-  chown -R www-data:www-data /var/www/phpmyadmin
+  chown -R root:www-data /var/www/phpmyadmin
+  chmod 0755 /var/www/phpmyadmin
+  chmod 0640 /var/www/phpmyadmin/config.inc.php
 
   # Setup Nginx configuration for phpMyAdmin on port 8080
   log_step "Configuring PHP-FPM socket..."
-  local php_service="php-fpm"
-  if command -v systemctl >/dev/null 2>&1; then
-    local detected_svc
-    detected_svc=$(systemctl list-unit-files | grep -E '^php[0-9.]+-fpm\.service' || true)
-    if [[ -n "${detected_svc}" ]]; then
-      php_service=$(echo "${detected_svc}" | head -n 1 | awk '{print $1}' | sed 's/\.service//')
-    fi
+  local php_service
+  php_service="$(systemctl list-unit-files --type=service --no-legend | awk '$1 ~ /^php[0-9.]+-fpm\.service$/ { sub(/\.service$/, "", $1); print $1; exit }')"
+  if [[ -z "${php_service}" ]]; then
+    log_error "PHP-FPM service was not found"
+    return 1
   fi
-
-  systemctl reset-failed "${php_service}" || true
-  systemctl enable --now "${php_service}" >> "${LOG_FILE}" 2>&1
-  systemctl restart "${php_service}" >> "${LOG_FILE}" 2>&1
+  run_cmd "enable PHP-FPM" systemctl enable --now "${php_service}"
 
   # Find PHP-FPM socket
   local socket_path=""
@@ -353,15 +315,20 @@ EOF
     fi
   done
   if [[ -z "${socket_path}" ]]; then
-    socket_path="/run/php/${php_service}.sock"
+    log_error "PHP-FPM socket was not found"
+    return 1
   fi
 
   log_step "Configuring Nginx reverse proxy on port 8080..."
   mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled
+  if [[ -L /etc/nginx/sites-available/phpmyadmin ]]; then
+    log_error "Nginx phpMyAdmin site config is a symlink; refusing to write through it"
+    return 1
+  fi
   cat <<EOF2 > /etc/nginx/sites-available/phpmyadmin
 server {
-    listen 8080 default_server;
-    listen [::]:8080 default_server;
+    listen 8080;
+    listen [::]:8080;
     root /var/www/phpmyadmin;
     index index.php index.html index.htm;
     server_name _;
@@ -379,11 +346,8 @@ EOF2
   rm -f /etc/nginx/sites-enabled/phpmyadmin
   ln -s /etc/nginx/sites-available/phpmyadmin /etc/nginx/sites-enabled/phpmyadmin
 
-  if [[ -f /etc/nginx/sites-enabled/default ]]; then
-    rm -f /etc/nginx/sites-enabled/default
-  fi
-
-  systemctl restart nginx >> "${LOG_FILE}" 2>&1
+  run_cmd "validate Nginx configuration" nginx -t
+  run_cmd "restart Nginx" systemctl restart nginx
 
   log_step "Verifying phpMyAdmin Auto Login with health check..."
   if curl --fail --silent --show-error --max-time 10 --output /dev/null "http://127.0.0.1:8080/"; then
@@ -446,8 +410,10 @@ done
 log_step "Updating package manager repositories..."
 run_cmd "apt-get update" apt-get update
 
-log_step "Installing MegoPanel dependencies (Go, Node.js, SQLite, rsync)..."
-run_cmd "apt-get install" apt-get install -y ca-certificates curl build-essential sqlite3 nodejs npm golang rsync openssl
+log_step "Installing MegoPanel system dependencies..."
+run_cmd "apt-get install" apt-get install -y ca-certificates curl build-essential sqlite3 rsync openssl
+install_go_toolchain
+install_node_toolchain
 
 # 4. Optional Component Installations
 if [[ "${nginx_selected}" == "true" ]]; then
@@ -464,7 +430,8 @@ fi
 
 # 5. Directory preparation
 log_step "Preparing installation directories..."
-run_cmd "mkdir -p" mkdir -p "${INSTALL_DIR}" "${CONFIG_DIR}" "${DATA_DIR}" "/etc/mysql"
+run_cmd "mkdir -p" mkdir -p "${INSTALL_DIR}" "${CONFIG_DIR}" "${DATA_DIR}" /var/backups/megopanel
+run_cmd "secure backup directory" chmod 0700 /var/backups/megopanel
 run_cmd "rsync backend" rsync -a --delete "${BACKEND_DIR}/" "${INSTALL_DIR}/backend/"
 run_cmd "rsync frontend" rsync -a --delete "${FRONTEND_DIR}/" "${INSTALL_DIR}/frontend/"
 
@@ -475,9 +442,9 @@ if [[ -d "${FRONTEND_DIR}/dist" ]]; then
   mkdir -p "${INSTALL_DIR}/frontend/dist"
   run_cmd "copy pre-built dist" cp -r "${FRONTEND_DIR}/dist/"* "${INSTALL_DIR}/frontend/dist/"
 else
-  log_step "Installing frontend project packages (npm install)..."
+  log_step "Installing frontend project packages (npm ci)..."
   cd "${INSTALL_DIR}/frontend"
-  run_cmd "npm install" npm install
+  run_cmd "npm ci" npm ci
 
   log_step "Building frontend production assets (npm run build)..."
   run_cmd "npm build" npm run build
@@ -499,11 +466,48 @@ run_cmd "go build" go build -trimpath -ldflags='-s -w' -o /usr/local/bin/megopan
 log_step "Configuring application service & security parameters..."
 if [[ ! -f "${CONFIG_DIR}/config.yaml" ]]; then
   JWT_SECRET="$(generate_secret)"
+  CSRF_SECRET="$(generate_secret)"
   run_cmd "cp config" cp "${INSTALL_DIR}/backend/configs/config.yaml" "${CONFIG_DIR}/config.yaml"
   run_cmd "sed DB path" sed -i 's#path: "panel.db"#path: "/var/lib/megopanel/panel.db"#' "${CONFIG_DIR}/config.yaml"
   run_cmd "sed port" sed -i "s#address: \":8888\"#address: \":${APP_PORT}\"#" "${CONFIG_DIR}/config.yaml"
   run_cmd "sed secret" sed -i "s#jwt_secret: \"change-me-in-production\"#jwt_secret: \"${JWT_SECRET}\"#" "${CONFIG_DIR}/config.yaml"
+  run_cmd "sed CSRF secret" sed -i "s#csrf_secret: \"change-me-csrf\"#csrf_secret: \"${CSRF_SECRET}\"#" "${CONFIG_DIR}/config.yaml"
 fi
+
+if ! grep -Eq '^[[:space:]]*jwt_secret:[[:space:]]*"[^\"]{32,}"' "${CONFIG_DIR}/config.yaml" || grep -Eqi '^[[:space:]]*jwt_secret:[[:space:]]*"change-me' "${CONFIG_DIR}/config.yaml"; then
+  JWT_SECRET="$(generate_secret)"
+  run_cmd "replace weak JWT secret" sed -i -E "s#^([[:space:]]*jwt_secret:).*#\1 \"${JWT_SECRET}\"#" "${CONFIG_DIR}/config.yaml"
+fi
+if ! grep -Eq '^[[:space:]]*csrf_secret:[[:space:]]*"[^\"]{32,}"' "${CONFIG_DIR}/config.yaml" || grep -Eqi '^[[:space:]]*csrf_secret:[[:space:]]*"change-me' "${CONFIG_DIR}/config.yaml"; then
+  CSRF_SECRET="$(generate_secret)"
+  run_cmd "replace weak CSRF secret" sed -i -E "s#^([[:space:]]*csrf_secret:).*#\1 \"${CSRF_SECRET}\"#" "${CONFIG_DIR}/config.yaml"
+fi
+run_cmd "secure panel config" chmod 0600 "${CONFIG_DIR}/config.yaml"
+
+if [[ -L "${CONFIG_DIR}/setup.token" ]]; then
+  log_error "Setup token path is a symlink; refusing to write through it"
+  exit 1
+fi
+admin_count=0
+if [[ -f "${DATA_DIR}/panel.db" ]]; then
+  admin_count="$(sqlite3 "${DATA_DIR}/panel.db" 'SELECT COUNT(*) FROM admins;' 2>/dev/null || printf '0')"
+fi
+if ! [[ "${admin_count}" =~ ^[0-9]+$ ]]; then admin_count=0; fi
+SETUP_TOKEN=""
+if (( admin_count == 0 )); then
+  if [[ ! -f "${CONFIG_DIR}/setup.token" ]]; then
+    SETUP_TOKEN="$(generate_secret)"
+    printf '%s\n' "${SETUP_TOKEN}" > "${CONFIG_DIR}/setup.token"
+  else
+    IFS= read -r SETUP_TOKEN < "${CONFIG_DIR}/setup.token" || true
+    if ! [[ "${SETUP_TOKEN}" =~ ^[0-9a-f]{64}$ ]]; then
+      SETUP_TOKEN="$(generate_secret)"
+      printf '%s\n' "${SETUP_TOKEN}" > "${CONFIG_DIR}/setup.token"
+    fi
+  fi
+  run_cmd "secure setup token" chmod 0600 "${CONFIG_DIR}/setup.token"
+fi
+run_cmd "secure panel data directory" chmod 0700 "${DATA_DIR}" "${CONFIG_DIR}"
 
 # Copy systemd service
 run_cmd "cp systemd service" cp "${PROJECT_ROOT}/systemd/megopanel.service" /etc/systemd/system/megopanel.service
@@ -517,4 +521,7 @@ SERVER_IP="$(detect_server_ip)"
 echo ""
 log_success "${BOLD}MegoPanel successfully installed!${RESET}"
 echo -e "Access link: ${BLUE}${BOLD}http://${SERVER_IP}:${APP_PORT}${RESET}"
+if [[ -n "${SETUP_TOKEN}" ]]; then
+  echo "One-time setup token (enter it in the first-run administrator form): ${SETUP_TOKEN}"
+fi
 echo "========================================="

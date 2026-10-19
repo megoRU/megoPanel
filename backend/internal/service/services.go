@@ -1,15 +1,21 @@
 package service
 
 import (
+	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
+	"embed"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -22,21 +28,53 @@ import (
 )
 
 type AuthService struct {
-	admins   repository.AdminRepository
-	settings repository.SettingRepository
-	cfg      *config.Config
+	admins          repository.AdminRepository
+	settings        repository.SettingRepository
+	cfg             *config.Config
+	setupMu         sync.Mutex
+	refreshMu       sync.Mutex
+	refreshSessions map[string]refreshSession
+	setupTokenPath  string
+}
+
+type refreshSession struct {
+	adminID   uint
+	expiresAt time.Time
 }
 
 func NewAuthService(admins repository.AdminRepository, settings repository.SettingRepository, cfg *config.Config) *AuthService {
-	return &AuthService{admins: admins, settings: settings, cfg: cfg}
+	setupTokenPath := os.Getenv("MEGOPANEL_SETUP_TOKEN_FILE")
+	if setupTokenPath == "" {
+		setupTokenPath = "/etc/megopanel/setup.token"
+	}
+	return &AuthService{admins: admins, settings: settings, cfg: cfg, refreshSessions: make(map[string]refreshSession), setupTokenPath: setupTokenPath}
 }
 func (s *AuthService) IsConfigured() (bool, error) {
 	count, err := s.admins.Count()
 	return count > 0, err
 }
-func (s *AuthService) CreateAdmin(username string, password string) error {
-	if len(password) < 8 {
-		return errors.New("password must contain at least 8 characters")
+func (s *AuthService) CreateAdmin(username string, password string, suppliedSetupToken string) error {
+	s.setupMu.Lock()
+	defer s.setupMu.Unlock()
+	username = strings.TrimSpace(username)
+	if username == "" || len(username) > 80 {
+		return errors.New("username must contain 1 to 80 characters")
+	}
+	if len(password) < 12 {
+		return errors.New("password must contain at least 12 characters")
+	}
+	count, err := s.admins.Count()
+	if err != nil {
+		return fmt.Errorf("check administrator setup: %w", err)
+	}
+	if count > 0 {
+		return errors.New("administrator setup is already complete")
+	}
+	setupToken, err := os.ReadFile(s.setupTokenPath)
+	expectedSetupToken := strings.TrimSpace(string(setupToken))
+	if err != nil || expectedSetupToken == "" || len(expectedSetupToken) != len(suppliedSetupToken) ||
+		subtle.ConstantTimeCompare([]byte(expectedSetupToken), []byte(suppliedSetupToken)) != 1 {
+		return errors.New("invalid one-time setup token")
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
@@ -45,7 +83,11 @@ func (s *AuthService) CreateAdmin(username string, password string) error {
 	if err := s.admins.Create(&domain.Admin{Username: username, PasswordHash: string(hash)}); err != nil {
 		return err
 	}
-	return s.settings.Set("configured", "true")
+	if err := s.settings.Set("configured", "true"); err != nil {
+		return err
+	}
+	_ = os.Remove(s.setupTokenPath)
+	return nil
 }
 func (s *AuthService) Login(username string, password string) (string, string, error) {
 	admin, err := s.admins.ByUsername(username)
@@ -59,15 +101,73 @@ func (s *AuthService) Login(username string, password string) (string, string, e
 	if err != nil {
 		return "", "", err
 	}
-	refresh, err := randomToken()
+	refresh, err := s.createRefresh(admin.ID)
 	return access, refresh, err
+}
+
+func (s *AuthService) Refresh(refreshToken string) (string, string, error) {
+	if refreshToken == "" {
+		return "", "", errors.New("unauthorized")
+	}
+	hash := sha256.Sum256([]byte(refreshToken))
+	key := hex.EncodeToString(hash[:])
+	s.refreshMu.Lock()
+	defer s.refreshMu.Unlock()
+	session, ok := s.refreshSessions[key]
+	delete(s.refreshSessions, key)
+	if !ok || time.Now().After(session.expiresAt) {
+		return "", "", errors.New("unauthorized")
+	}
+	access, err := s.token(session.adminID, s.cfg.AccessTTL())
+	if err != nil {
+		return "", "", err
+	}
+	rotated, err := s.createRefreshLocked(session.adminID)
+	return access, rotated, err
+}
+
+func (s *AuthService) RevokeRefresh(refreshToken string) {
+	if refreshToken == "" {
+		return
+	}
+	hash := sha256.Sum256([]byte(refreshToken))
+	s.refreshMu.Lock()
+	delete(s.refreshSessions, hex.EncodeToString(hash[:]))
+	s.refreshMu.Unlock()
+}
+
+func (s *AuthService) createRefresh(adminID uint) (string, error) {
+	s.refreshMu.Lock()
+	defer s.refreshMu.Unlock()
+	return s.createRefreshLocked(adminID)
+}
+
+func (s *AuthService) createRefreshLocked(adminID uint) (string, error) {
+	token, err := randomToken()
+	if err != nil {
+		return "", err
+	}
+	hash := sha256.Sum256([]byte(token))
+	now := time.Now()
+	for key, session := range s.refreshSessions {
+		if now.After(session.expiresAt) {
+			delete(s.refreshSessions, key)
+		}
+	}
+	s.refreshSessions[hex.EncodeToString(hash[:])] = refreshSession{adminID: adminID, expiresAt: now.Add(s.cfg.RefreshTTL())}
+	return token, nil
 }
 func (s *AuthService) token(id uint, ttl time.Duration) (string, error) {
 	claims := jwt.MapClaims{"sub": strconv.Itoa(int(id)), "exp": time.Now().Add(ttl).Unix(), "iat": time.Now().Unix()}
 	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte(s.cfg.Security.JWTSecret))
 }
 func (s *AuthService) Verify(tokenString string) error {
-	token, err := jwt.Parse(tokenString, func(t *jwt.Token) (interface{}, error) { return []byte(s.cfg.Security.JWTSecret), nil })
+	token, err := jwt.Parse(tokenString, func(t *jwt.Token) (interface{}, error) {
+		if t.Method != jwt.SigningMethodHS256 {
+			return nil, errors.New("unexpected signing method")
+		}
+		return []byte(s.cfg.Security.JWTSecret), nil
+	}, jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}))
 	if err != nil || !token.Valid {
 		return errors.New("unauthorized")
 	}
@@ -86,7 +186,7 @@ func NewDashboardService() *DashboardService { return &DashboardService{} }
 func getRAMUsage() (used float64, total float64) {
 	data, err := os.ReadFile("/proc/meminfo")
 	if err != nil {
-		return 1.5, 4.0 // fallback
+		return 0, 0
 	}
 	var memTotal, memAvailable float64
 	for _, line := range strings.Split(string(data), "\n") {
@@ -106,7 +206,7 @@ func getRAMUsage() (used float64, total float64) {
 		}
 	}
 	if memTotal == 0 {
-		return 1.5, 4.0
+		return 0, 0
 	}
 	if memAvailable == 0 {
 		// fallback using MemFree
@@ -128,7 +228,7 @@ func getDiskUsage() (used float64, total float64) {
 	var stat syscall.Statfs_t
 	err := syscall.Statfs("/", &stat)
 	if err != nil {
-		return 4.2, 10.0 // fallback
+		return 0, 0
 	}
 	all := float64(stat.Blocks) * float64(stat.Bsize)
 	free := float64(stat.Bfree) * float64(stat.Bsize)
@@ -191,26 +291,81 @@ func readFirst(path string, prefix string) string {
 	return runtime.GOOS
 }
 
-var StartTime = time.Now()
-
 func readUptime() string {
-	return time.Since(StartTime).Round(time.Second).String()
-}
-func sampleCPU() float64 {
-	data, _ := os.ReadFile("/proc/loadavg")
+	data, err := os.ReadFile("/proc/uptime")
+	if err != nil {
+		return "unknown"
+	}
 	fields := strings.Fields(string(data))
 	if len(fields) == 0 {
+		return "unknown"
+	}
+	seconds, err := strconv.ParseFloat(fields[0], 64)
+	if err != nil || seconds < 0 {
+		return "unknown"
+	}
+	return (time.Duration(seconds * float64(time.Second))).Round(time.Second).String()
+}
+
+var cpuSampleMu sync.Mutex
+var previousCPUTotal uint64
+var previousCPUIdle uint64
+
+func sampleCPU() float64 {
+	data, err := os.ReadFile("/proc/stat")
+	if err != nil {
 		return 0
 	}
-	value, _ := strconv.ParseFloat(fields[0], 64)
-	return value * 10
+	var cpuLine string
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(line, "cpu ") {
+			cpuLine = line
+			break
+		}
+	}
+	total, idle, ok := parseCPUStat(cpuLine)
+	if !ok {
+		return 0
+	}
+	cpuSampleMu.Lock()
+	defer cpuSampleMu.Unlock()
+	if previousCPUTotal == 0 || total <= previousCPUTotal || idle < previousCPUIdle {
+		previousCPUTotal, previousCPUIdle = total, idle
+		return 0
+	}
+	totalDelta := total - previousCPUTotal
+	idleDelta := idle - previousCPUIdle
+	previousCPUTotal, previousCPUIdle = total, idle
+	usage := (1 - float64(idleDelta)/float64(totalDelta)) * 100
+	if usage < 0 {
+		return 0
+	}
+	if usage > 100 {
+		return 100
+	}
+	return usage
 }
-func sampleRAM() float64 {
-	var mem runtime.MemStats
-	runtime.ReadMemStats(&mem)
-	return float64(mem.Sys % 100)
+
+func parseCPUStat(line string) (total, idle uint64, ok bool) {
+	fields := strings.Fields(line)
+	if len(fields) < 5 || fields[0] != "cpu" {
+		return 0, 0, false
+	}
+	for index, field := range fields[1:] {
+		if index >= 8 {
+			break
+		}
+		value, err := strconv.ParseUint(field, 10, 64)
+		if err != nil {
+			return 0, 0, false
+		}
+		total += value
+		if index == 3 || index == 4 {
+			idle += value
+		}
+	}
+	return total, idle, total > 0
 }
-func sampleDisk() float64 { return 42 }
 
 type InstallService struct {
 	repo     repository.ServiceRepository
@@ -266,124 +421,190 @@ func (s *InstallService) Status(name string) (*domain.ServiceState, error) {
 		installed = isMariaDBInstalled()
 	case "phpmyadmin":
 		installed = isPhpMyAdminInstalled()
+	default:
+		return nil, errors.New("unknown service")
 	}
 
 	state, err := s.repo.Get(name)
 	if err != nil {
-		state = &domain.ServiceState{Name: name, Installed: installed, UpdatedAt: time.Now()}
-	} else {
-		state.Installed = installed
-		state.UpdatedAt = time.Now()
+		return nil, fmt.Errorf("read %s status: %w", name, err)
 	}
-	_ = s.repo.Save(state)
+	state.Installed = installed
+	state.UpdatedAt = time.Now()
+	if err := s.repo.Save(state); err != nil {
+		return nil, fmt.Errorf("save %s status: %w", name, err)
+	}
 	return state, nil
 }
-func (s *InstallService) InstallMariaDB(remote bool, rootPassword string) (*domain.ServiceState, error) {
+func (s *InstallService) InstallMariaDB(ctx context.Context, remote bool, rootPassword string) (*domain.ServiceState, error) {
 	if !isMariaDBInstalled() {
 		return nil, errors.New("MariaDB is not installed on the system. Please run install.sh")
 	}
 	if remote {
-		_ = os.WriteFile("/etc/mysql/mariadb.conf.d/60-megopanel.cnf", []byte("[mysqld]\nbind-address=0.0.0.0\n"), 0644)
+		return nil, errors.New("remote MariaDB access is disabled; configure a restricted network policy before exposing the database")
 	}
-	_ = s.pm.Enable("mariadb")
-	_ = s.pm.Restart("mariadb")
-
-	if rootPassword != "" {
-		_ = s.settings.Set("mariadb_root_password", rootPassword)
-		time.Sleep(1 * time.Second)
-		sqlCmd := fmt.Sprintf("ALTER USER 'root'@'localhost' IDENTIFIED BY '%s'; FLUSH PRIVILEGES;", strings.ReplaceAll(rootPassword, "'", "\\'"))
-		cmd := exec.Command("mysql", "-u", "root", "-e", sqlCmd)
-		if err := cmd.Run(); err != nil {
-			cmd = exec.Command("mariadb", "-u", "root", "-e", sqlCmd)
-			_ = cmd.Run()
-		}
+	if err := s.pm.Enable("mariadb"); err != nil {
+		return nil, fmt.Errorf("enable MariaDB: %w", err)
+	}
+	if err := s.ensureMariaDBAdmin(ctx, rootPassword); err != nil {
+		return nil, fmt.Errorf("configure MegoPanel MariaDB administrator: %w", err)
 	}
 
 	state := &domain.ServiceState{Name: "mariadb", Installed: true, UpdatedAt: time.Now()}
 	return state, s.repo.Save(state)
 }
+
+// EnsureMariaDBAdmin provisions one dedicated panel account for database
+// management and phpMyAdmin. It deliberately avoids using MariaDB's root
+// account for ordinary panel operations.
+func (s *InstallService) EnsureMariaDBAdmin(ctx context.Context) error {
+	return s.ensureMariaDBAdmin(ctx, "")
+}
+
+func (s *InstallService) ensureMariaDBAdmin(ctx context.Context, suppliedRootPassword string) error {
+	if !isMariaDBInstalled() {
+		return nil
+	}
+	password, exists, err := s.settings.Get("mariadb_admin_password")
+	if err != nil {
+		return fmt.Errorf("read panel database credentials: %w", err)
+	}
+	if exists && password != "" {
+		if _, err := platform.MariaDBQuery(ctx, "megopanel", password, "SELECT 1;"); err == nil {
+			if _, legacy, getErr := s.settings.Get("mariadb_root_password"); getErr == nil && legacy {
+				if err := s.settings.Delete("mariadb_root_password"); err != nil {
+					return fmt.Errorf("remove legacy root credentials from panel settings: %w", err)
+				}
+			}
+			return nil
+		}
+	}
+	legacyRootPassword, legacyExists, err := s.settings.Get("mariadb_root_password")
+	if err != nil {
+		return fmt.Errorf("read MariaDB root credentials: %w", err)
+	}
+	rootPassword := suppliedRootPassword
+	if rootPassword == "" && legacyExists {
+		rootPassword = legacyRootPassword
+	}
+	password, err = randomToken()
+	if err != nil {
+		return fmt.Errorf("generate panel database password: %w", err)
+	}
+	passwordLiteral, err := platform.MariaDBStringLiteral(password)
+	if err != nil {
+		return err
+	}
+	query := "CREATE USER IF NOT EXISTS 'megopanel'@'localhost' IDENTIFIED VIA mysql_native_password USING PASSWORD(" + passwordLiteral + "); " +
+		"ALTER USER 'megopanel'@'localhost' IDENTIFIED VIA mysql_native_password USING PASSWORD(" + passwordLiteral + "); " +
+		"GRANT ALL PRIVILEGES ON *.* TO 'megopanel'@'localhost' WITH GRANT OPTION; FLUSH PRIVILEGES;"
+	if _, err := platform.MariaDBQuery(ctx, "root", rootPassword, query); err != nil {
+		return errors.New("could not provision the panel database account with the supplied MariaDB root credentials or local Unix socket authentication")
+	}
+	if err := s.settings.Set("mariadb_admin_password", password); err != nil {
+		return fmt.Errorf("save panel database credentials: %w", err)
+	}
+	if legacyExists {
+		if err := s.settings.Delete("mariadb_root_password"); err != nil {
+			return fmt.Errorf("remove legacy root credentials from panel settings: %w", err)
+		}
+	}
+	return nil
+}
 func (s *InstallService) InstallNginx() (*domain.ServiceState, error) {
 	if !isNginxInstalled() {
 		return nil, errors.New("Nginx is not installed on the system. Please run install.sh")
 	}
-	_ = os.Remove("/etc/nginx/sites-enabled/default")
-	_ = s.pm.Enable("nginx")
-	_ = s.pm.Restart("nginx")
+	if err := s.pm.Enable("nginx"); err != nil {
+		return nil, fmt.Errorf("enable Nginx: %w", err)
+	}
 	state := &domain.ServiceState{Name: "nginx", Installed: true, UpdatedAt: time.Now()}
 	return state, s.repo.Save(state)
 }
 
 func (s *InstallService) EnsureAutologinFiles(port string) error {
-	// If phpmyadmin directory doesn't exist, do nothing
-	if _, err := os.Stat("/var/www/phpmyadmin"); os.IsNotExist(err) {
+	// If phpMyAdmin is not installed, there is nothing to manage. Refuse to
+	// follow a symlink because this service runs as root.
+	basePath := "/var/www/phpmyadmin"
+	baseInfo, err := os.Lstat(basePath)
+	if os.IsNotExist(err) {
 		return nil
 	}
-
-	autologinPath := "/var/www/phpmyadmin/autologin.php"
-	signonPath := "/var/www/phpmyadmin/signon.php"
-	configPath := "/var/www/phpmyadmin/config.inc.php"
-
-	writeSignon := false
-	if info, err := os.Stat(signonPath); err != nil || info.Size() == 0 {
-		writeSignon = true
+	if err != nil {
+		return err
+	}
+	if !baseInfo.IsDir() || baseInfo.Mode()&os.ModeSymlink != 0 {
+		return errors.New("phpMyAdmin directory must be a real directory")
+	}
+	if err := exec.Command("chown", "--no-dereference", "-R", "root:www-data", basePath).Run(); err != nil {
+		return fmt.Errorf("set phpMyAdmin files owner: %w", err)
+	}
+	if err := exec.Command("chmod", "-R", "go-w", basePath).Run(); err != nil {
+		return fmt.Errorf("secure phpMyAdmin file permissions: %w", err)
+	}
+	if err := os.Chmod(basePath, 0755); err != nil {
+		return fmt.Errorf("secure phpMyAdmin directory permissions: %w", err)
 	}
 
-	writeAutologin := false
-	if info, err := os.Stat(autologinPath); err != nil || info.Size() == 0 {
-		writeAutologin = true
-	}
+	autologinPath := basePath + "/autologin.php"
+	signonPath := basePath + "/signon.php"
+	configPath := basePath + "/config.inc.php"
 
-	if writeAutologin {
-		autologinPHP := getAutologinPHP()
-		if err := os.WriteFile(autologinPath, []byte(autologinPHP), 0644); err != nil {
-			return err
+	autologinPHP := getAutologinPHP()
+	signonPHP := getSignonPHP(port)
+	writeManaged := func(path, contents string, legacyMarkers ...string) (bool, error) {
+		info, statErr := os.Lstat(path)
+		if statErr == nil && (!info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0) {
+			return false, fmt.Errorf("refusing to replace non-regular managed file %s", path)
 		}
-	}
-
-	if writeSignon {
-		signonPHP := getSignonPHP(port)
-		if err := os.WriteFile(signonPath, []byte(signonPHP), 0644); err != nil {
-			return err
+		if statErr != nil && !os.IsNotExist(statErr) {
+			return false, statErr
 		}
-	}
-
-	// Make sure we update config.inc.php if it exists but doesn't have signon configured
-	if _, err := os.Stat(configPath); err == nil {
-		configBytes, err := os.ReadFile(configPath)
+		current, err := os.ReadFile(path)
+		if err == nil && string(current) == contents {
+			return false, nil
+		}
 		if err == nil {
-			configStr := string(configBytes)
-			if !strings.Contains(configStr, "signon") {
-				blowfishSecret, err := randomToken()
-				if err == nil {
-					if len(blowfishSecret) > 32 {
-						blowfishSecret = blowfishSecret[:32]
-					}
-					pmaConfig := `<?php
-$cfg['blowfish_secret'] = '` + blowfishSecret + `';
-$i = 0;
-$i++;
-
-$cfg['Servers'][$i]['auth_type'] = 'signon';
-$cfg['Servers'][$i]['SignonSession'] = 'SignonSession';
-$cfg['Servers'][$i]['SignonURL'] = 'signon.php';
-$cfg['Servers'][$i]['LogoutURL'] = 'signon.php?action=logout';
-$cfg['Servers'][$i]['host'] = 'localhost';
-$cfg['Servers'][$i]['compress'] = false;
-$cfg['Servers'][$i]['AllowNoPassword'] = false;
-`
-					_ = os.WriteFile(configPath, []byte(pmaConfig), 0644)
-					_ = exec.Command("chown", "www-data:www-data", configPath).Run()
-				}
+			managed := false
+			for _, marker := range legacyMarkers {
+				managed = managed || strings.Contains(string(current), marker)
 			}
+			if !managed {
+				return false, nil
+			}
+		} else if !os.IsNotExist(err) {
+			return false, err
 		}
+		if err := os.WriteFile(path, []byte(contents), 0644); err != nil {
+			return false, err
+		}
+		if err := os.Chmod(path, 0640); err != nil {
+			return false, err
+		}
+		if err := exec.Command("chown", "root:www-data", path).Run(); err != nil {
+			return false, err
+		}
+		return true, nil
 	}
 
-	if writeAutologin {
-		_ = exec.Command("chown", "www-data:www-data", autologinPath).Run()
+	if _, err := writeManaged(autologinPath, autologinPHP, "MegoPanel sign-on v2", "signon.php?token="); err != nil {
+		return err
 	}
-	if writeSignon {
-		_ = exec.Command("chown", "www-data:www-data", signonPath).Run()
+	if _, err := writeManaged(signonPath, signonPHP,
+		"MegoPanel sign-on bridge",
+		"Token is missing or invalid.",
+		"expired after 15 seconds",
+	); err != nil {
+		return err
 	}
+
+	if err := ensurePMASignonConfig(configPath); err != nil {
+		return fmt.Errorf("ensure phpMyAdmin sign-on config: %w", err)
+	}
+	if err := exec.Command("chown", "root:www-data", configPath).Run(); err != nil {
+		return fmt.Errorf("set phpMyAdmin config owner: %w", err)
+	}
+
 	return nil
 }
 
@@ -414,8 +635,8 @@ func (s *InstallService) InstallPhpMyAdmin(port string) (*domain.ServiceState, e
 		return nil, fmt.Errorf("php-fpm socket %s is not available: %w", socketPath, err)
 	}
 	nginxConfig := `server {
-    listen 8080 default_server;
-    listen [::]:8080 default_server;
+    listen 8080;
+    listen [::]:8080;
     root /var/www/phpmyadmin;
     index index.php index.html index.htm;
     server_name _;
@@ -434,13 +655,19 @@ func (s *InstallService) InstallPhpMyAdmin(port string) (*domain.ServiceState, e
 	if err := os.MkdirAll("/etc/nginx/sites-enabled", 0755); err != nil {
 		return nil, fmt.Errorf("failed to create nginx sites-enabled directory: %w", err)
 	}
-	if err := os.WriteFile("/etc/nginx/sites-available/phpmyadmin", []byte(nginxConfig), 0644); err != nil {
+	nginxSitePath := "/etc/nginx/sites-available/phpmyadmin"
+	if info, err := os.Lstat(nginxSitePath); err == nil && (!info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0) {
+		return nil, errors.New("refusing to replace a non-regular Nginx phpMyAdmin config")
+	} else if err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("inspect Nginx phpMyAdmin config: %w", err)
+	}
+	if err := os.WriteFile(nginxSitePath, []byte(nginxConfig), 0644); err != nil {
 		return nil, fmt.Errorf("failed to write phpmyadmin nginx configuration: %w", err)
 	}
 	if err := os.Remove("/etc/nginx/sites-enabled/phpmyadmin"); err != nil && !os.IsNotExist(err) {
 		return nil, fmt.Errorf("failed to replace phpmyadmin nginx symlink: %w", err)
 	}
-	if err := os.Symlink("/etc/nginx/sites-available/phpmyadmin", "/etc/nginx/sites-enabled/phpmyadmin"); err != nil {
+	if err := os.Symlink(nginxSitePath, "/etc/nginx/sites-enabled/phpmyadmin"); err != nil {
 		return nil, fmt.Errorf("failed to enable phpmyadmin nginx site: %w", err)
 	}
 	nginxTestCmd := exec.Command("nginx", "-t")
@@ -467,155 +694,104 @@ func (s *InstallService) InstallPhpMyAdmin(port string) (*domain.ServiceState, e
 	return state, s.repo.Save(state)
 }
 
+//go:embed templates/signon.php
+var phpMyAdminSignonTemplate embed.FS
+
+// getAutologinPHP deliberately refuses bearer tokens in query strings.
 func getAutologinPHP() string {
 	return `<?php
-if (isset($_GET['token'])) {
-    $token = preg_replace('/[^a-zA-Z0-9-]/', '', $_GET['token']);
-    header('Location: signon.php?token=' . $token);
-    exit;
-}
-header('Location: index.php');
+// MegoPanel sign-on v2 never accepts bearer tokens in query strings.
+header('Cache-Control: no-store, private');
+header('Referrer-Policy: no-referrer');
+header('Location: ./');
 exit;
 `
 }
 
 func getSignonPHP(port string) string {
-	return `<?php
-session_name('SignonSession');
-session_start();
-
-if (isset($_GET['action']) && $_GET['action'] === 'logout') {
-    unset($_SESSION['PMA_single_signon_user']);
-    unset($_SESSION['PMA_single_signon_password']);
-    unset($_SESSION['PMA_single_signon_host']);
-    session_destroy();
-    header('Location: http://' . $_SERVER['HTTP_HOST'] . ':` + port + `/');
-    exit;
+	if !regexp.MustCompile(`^[0-9]{1,5}$`).MatchString(port) {
+		port = "8888"
+	}
+	contents, err := phpMyAdminSignonTemplate.ReadFile("templates/signon.php")
+	if err != nil {
+		return ""
+	}
+	return strings.ReplaceAll(string(contents), "__MEGOPANEL_API_PORT__", port)
 }
 
-$token = isset($_GET['token']) ? preg_replace('/[^a-zA-Z0-9-]/', '', $_GET['token']) : '';
+func ensurePMASignonConfig(path string) error {
+	info, statErr := os.Lstat(path)
+	if statErr == nil && (!info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0) {
+		return errors.New("phpMyAdmin config must be a regular file")
+	}
+	if statErr != nil && !os.IsNotExist(statErr) {
+		return statErr
+	}
+	current, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
 
-if (empty($token)) {
-    show_error_page("Token is missing or invalid.", "Please try logging in to phpMyAdmin again from the MegoPanel dashboard.");
-}
-
-$apiUrl = "http://127.0.0.1:` + port + `/internal/phpmyadmin/token?token=" . urlencode($token);
-
-$ch = curl_init();
-curl_setopt($ch, CURLOPT_URL, $apiUrl);
-curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-curl_setopt($ch, CURLOPT_TIMEOUT, 5);
-$response = curl_exec($ch);
-$httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-curl_close($ch);
-
-if ($httpCode !== 200 || !$response) {
-    $ctx = stream_context_create([
-        'http' => [
-            'timeout' => 5,
-            'ignore_errors' => true
-        ]
-    ]);
-    $response = @file_get_contents($apiUrl, false, $ctx);
-    $httpCode = 0;
-    if (isset($http_response_header[0])) {
-        preg_match('{HTTP\/\S+\s+(\d+)}', $http_response_header[0], $matches);
-        if (isset($matches[1])) {
-            $httpCode = intval($matches[1]);
-        }
-    }
-}
-
-if ($httpCode !== 200 || !$response) {
-    show_error_page("Authentication failed.", "The autologin token is invalid, expired (expired after 15 seconds), or already used. Please go back to the MegoPanel dashboard and try again.");
-}
-
-$data = json_decode($response, true);
-if (!$data || !isset($data['username']) || !isset($data['password'])) {
-    show_error_page("Malformed API response.", "The authentication service returned an invalid response format.");
-}
-
-$_SESSION['PMA_single_signon_user'] = $data['username'];
-$_SESSION['PMA_single_signon_password'] = $data['password'];
-$_SESSION['PMA_single_signon_host'] = 'localhost';
-
-header('Location: index.php');
-exit;
-
-function show_error_page($title, $message) {
-    header("HTTP/1.1 403 Forbidden");
-    ?>
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>phpMyAdmin Autologin Error</title>
-        <style>
-            body {
-                background: #0f0f11;
-                color: #e4e4e7;
-                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                min-height: 100vh;
-                margin: 0;
-            }
-            .card {
-                background: #18181b;
-                border: 1px solid #27272a;
-                border-radius: 8px;
-                padding: 32px;
-                max-width: 480px;
-                width: 100%;
-                box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
-                text-align: center;
-            }
-            .icon {
-                color: #ef4444;
-                font-size: 48px;
-                margin-bottom: 16px;
-            }
-            h1 {
-                font-size: 20px;
-                font-weight: 600;
-                margin: 0 0 12px 0;
-                color: #ffffff;
-            }
-            p {
-                font-size: 14px;
-                color: #a1a1aa;
-                line-height: 1.5;
-                margin: 0 0 24px 0;
-            }
-            .btn {
-                display: inline-block;
-                background: #ffffff;
-                color: #0f0f11;
-                font-weight: 600;
-                font-size: 13px;
-                text-decoration: none;
-                padding: 10px 20px;
-                border-radius: 6px;
-                transition: background 0.15s ease;
-            }
-            .btn:hover {
-                background: #e4e4e7;
-            }
-        </style>
-    </head>
-    <body>
-        <div class="card">
-            <div class="icon">⚠️</div>
-            <h1><?php echo htmlspecialchars($title); ?></h1>
-            <p><?php echo htmlspecialchars($message); ?></p>
-            <a href="http://<?php echo htmlspecialchars($_SERVER['HTTP_HOST']); ?>:` + port + `/" class="btn">Back to Dashboard</a>
-        </div>
-    </body>
-    </html>
-    <?php
-    exit;
-}
+	config := string(current)
+	managed := `
+if (!isset($i)) { $i = 1; }
+$cfg['Servers'][$i]['auth_type'] = 'signon';
+$cfg['Servers'][$i]['SignonSession'] = 'SignonSession';
+$cfg['Servers'][$i]['SignonURL'] = 'signon.php';
+$cfg['Servers'][$i]['LogoutURL'] = 'signon.php?action=logout';
+$cfg['Servers'][$i]['host'] = 'localhost';
+$cfg['Servers'][$i]['AllowNoPassword'] = false;
 `
+	if os.IsNotExist(err) {
+		secret, secretErr := randomToken()
+		if secretErr != nil {
+			return secretErr
+		}
+		config = "<?php\n$cfg['blowfish_secret'] = '" + secret[:32] + "';\n$i = 1;\n" + managed
+	} else {
+		if !strings.Contains(config, "<?php") {
+			return errors.New("phpMyAdmin config does not contain a PHP opening tag")
+		}
+		var additions strings.Builder
+		if !regexp.MustCompile(`\$cfg\[['\"]blowfish_secret['\"]\]`).MatchString(config) {
+			secret, secretErr := randomToken()
+			if secretErr != nil {
+				return secretErr
+			}
+			fmt.Fprintf(&additions, "\n$cfg['blowfish_secret'] = '%s';\n", secret[:32])
+		}
+		for _, required := range []string{
+			"$cfg['Servers'][$i]['auth_type'] = 'signon';",
+			"$cfg['Servers'][$i]['SignonSession'] = 'SignonSession';",
+			"$cfg['Servers'][$i]['SignonURL'] = 'signon.php';",
+			"$cfg['Servers'][$i]['LogoutURL'] = 'signon.php?action=logout';",
+			"$cfg['Servers'][$i]['host'] = 'localhost';",
+			"$cfg['Servers'][$i]['AllowNoPassword'] = false;",
+		} {
+			if !strings.Contains(config, required) {
+				fmt.Fprintf(&additions, "\n%s\n", required)
+			}
+		}
+		if additions.Len() > 0 {
+			backupPath := path + ".megopanel.bak"
+			if _, statErr := os.Stat(backupPath); os.IsNotExist(statErr) {
+				if writeErr := os.WriteFile(backupPath, current, 0600); writeErr != nil {
+					return fmt.Errorf("backup existing config: %w", writeErr)
+				}
+			}
+			offset := strings.LastIndex(config, "?>")
+			if offset >= 0 {
+				config = config[:offset] + additions.String() + config[offset:]
+			} else {
+				config += additions.String()
+			}
+		}
+	}
+	if err := os.WriteFile(path, []byte(config), 0640); err != nil {
+		return err
+	}
+	if err := os.Chmod(path, 0640); err != nil {
+		return err
+	}
+	return nil
 }
