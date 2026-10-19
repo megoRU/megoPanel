@@ -25,7 +25,16 @@ jobs:
         run: go mod tidy
       - name: Format check
         working-directory: backend
-        run: test -z "$(gofmt -l .)"
+        run: |
+          files="$(gofmt -l .)"
+          if [ -n "$files" ]; then
+            echo "These Go files need gofmt:"
+            printf '%s\n' "$files"
+            while IFS= read -r file; do
+              gofmt -d "$file"
+            done <<< "$files"
+            exit 1
+          fi
       - name: Unit tests
         working-directory: backend
         run: go test ./...
