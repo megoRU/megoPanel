@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	CurrentVersion      = "v1.1.2"
+	CurrentVersion      = "v1.2.0"
 	GitHubAPIURL        = "https://api.github.com/repos/megoRU/megoPanel/releases/latest"
 	maxReleaseAPIBytes  = 1 << 20
 	maxChecksumFileSize = 4096
