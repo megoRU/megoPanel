@@ -128,11 +128,11 @@ func (s *BackupService) UpdateSettings(next BackupSettings) (BackupSettings, err
 		return BackupSettings{}, err
 	}
 	for key, value := range map[string]string{
-		"backups_directory":       filepath.Clean(next.Directory),
-		"backups_schedule_enabled": strconv.FormatBool(next.ScheduleEnabled),
-		"backups_schedule_hour":    strconv.Itoa(next.ScheduleHour),
-		"backups_retention_count":  strconv.Itoa(next.RetentionCount),
-		"backups_retention_days":   strconv.Itoa(next.RetentionDays),
+		"backups_directory":           filepath.Clean(next.Directory),
+		"backups_schedule_enabled":    strconv.FormatBool(next.ScheduleEnabled),
+		"backups_schedule_hour":       strconv.Itoa(next.ScheduleHour),
+		"backups_retention_count":     strconv.Itoa(next.RetentionCount),
+		"backups_retention_days":      strconv.Itoa(next.RetentionDays),
 		"backups_schedule_components": string(components),
 	} {
 		if err := s.settings.Set(key, value); err != nil {

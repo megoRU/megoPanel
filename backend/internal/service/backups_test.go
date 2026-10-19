@@ -26,9 +26,9 @@ func TestValidBackupEntryName(t *testing.T) {
 
 func TestVerifyBackupArchive(t *testing.T) {
 	tests := []struct {
-		name       string
-		entries    []backupTestEntry
-		wantErr    bool
+		name    string
+		entries []backupTestEntry
+		wantErr bool
 	}{
 		{
 			name: "valid panel backup",
