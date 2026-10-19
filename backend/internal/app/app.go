@@ -84,5 +84,9 @@ func (a *App) Run() error {
 
 type noopPackageManager struct{}
 
-func (n *noopPackageManager) Restart(string) error { return errors.New("system service manager is unavailable") }
-func (n *noopPackageManager) Enable(string) error  { return errors.New("system service manager is unavailable") }
+func (n *noopPackageManager) Restart(string) error {
+	return errors.New("system service manager is unavailable")
+}
+func (n *noopPackageManager) Enable(string) error {
+	return errors.New("system service manager is unavailable")
+}
