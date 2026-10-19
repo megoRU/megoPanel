@@ -1,7 +1,6 @@
 <?php
 // MegoPanel sign-on bridge v2. The one-time token is supplied in the URL
 // fragment, which browsers never send to web or proxy access logs.
-$apiPort = '__MEGOPANEL_API_PORT__';
 $isSecure = isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== '' && $_SERVER['HTTPS'] !== 'off';
 $scheme = $isSecure ? 'https' : 'http';
 $expectedOrigin = $scheme . '://' . ($_SERVER['HTTP_HOST'] ?? '');
@@ -40,7 +39,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     $payload = json_encode(['token' => $token]);
-    $curl = curl_init('http://127.0.0.1:' . $apiPort . '/internal/phpmyadmin/token');
+    $curl = curl_init('http://127.0.0.1:__MEGOPANEL_API_PORT__/internal/phpmyadmin/token');
     curl_setopt_array($curl, [
         CURLOPT_POST => true,
         CURLOPT_POSTFIELDS => $payload,
