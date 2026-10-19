@@ -605,8 +605,6 @@ func (s *InstallService) EnsureAutologinFiles(port string) error {
 		return fmt.Errorf("set phpMyAdmin config owner: %w", err)
 	}
 
-	_ = writeAuto
-	_ = writeSignon
 	return nil
 }
 
